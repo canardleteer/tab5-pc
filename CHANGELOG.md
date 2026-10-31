@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The Machine frame's **ISO**, beside **DOS** and **Linux** (as the three now read): a new machine that starts from
+  an installer CD's `.iso` at the card's root, chosen in the dialog, with an empty 512 MB `C.IMG` (no download, no
+  Wi-Fi needed); it starts from C: once the installer has put a system there. Serial: `install iso <name> [<file>]`.
+- README: no longer says the translator is off while an installer runs (it has been on since 1.1.0).
+
 ## 1.2.1 (2026-10-28)
 
 The empty card's settings panel with the Machine frame alone, and README updates. The firmware image with its

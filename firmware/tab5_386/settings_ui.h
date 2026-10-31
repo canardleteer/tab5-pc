@@ -25,12 +25,14 @@ static lv_display_t* g_disp;
 static lv_obj_t *ui_wifi, *ui_addr, *ui_pcstate, *ui_list, *ui_scan_lbl, *ui_pause_lbl, *ui_reset_lbl;
 static lv_obj_t *ui_modal, *ui_modal_title, *ui_ta_ssid, *ui_ta_pass, *ui_show_btn, *ui_msg, *ui_spinner, *ui_kb;
 static lv_obj_t *ui_connect_btn, *ui_bri, *ui_vol, *ui_mouse, *ui_wifi_sw, *ui_batt, *ui_aspect_sw;
-static lv_obj_t *ui_mach_dd, *ui_mach_start, *ui_inst_msg, *ui_dos_btn, *ui_lnx_btn;   // the machines
+static lv_obj_t *ui_mach_dd, *ui_mach_start, *ui_inst_msg, *ui_dos_btn, *ui_lnx_btn, *ui_iso_btn;   // the machines
 static int64_t g_start_armed = 0;   // "Start" tapped once at this time (as Reset PC: it restarts the Tab5)
-// The dialog: a Wi-Fi network's name and password, or a new machine's name (Install DOS / Install Linux)
-enum ModalMode { MODAL_WIFI, MODAL_DOS, MODAL_LINUX };
+// The dialog: a Wi-Fi network's name and password, or a new machine's name (Install DOS / Linux / ISO; for an ISO,
+// the CD image too)
+enum ModalMode { MODAL_WIFI, MODAL_DOS, MODAL_LINUX, MODAL_ISO };
 static ModalMode g_modal_mode = MODAL_WIFI;
-static lv_obj_t* ui_pass_row;
+static lv_obj_t *ui_pass_row, *ui_iso_dd;
+static String g_iso_name;   // the name the dialog suggested for the CD image chosen (replaced when another is chosen)
 static String g_update_ok;   // the name Install was tapped for once (it warns that the PC stops): again installs
 static bool g_scanning = false, g_connect_pending = false, g_touch_block = false;
 static int64_t g_reset_armed = 0;   // "Reset PC" tapped once at this time: a second tap within RESET_CONFIRM_MS resets
@@ -214,9 +216,10 @@ static void ui_switch_label(lv_obj_t* label, lv_obj_t* sw) {
 
 // ---- machines -----------------------------------------------------------------------------------------------
 
-// The card's machines into the list (linux_install.h), the one running chosen
+// The card's machines into the list (linux_install.h), the one running chosen; and the CD images there (fd_install.h)
 static void ui_fill_machines() {
   machines_scan();
+  fd_find_isos();
   String opts;
   int cur = 0;
   for (int i = 0; i < g_machine_count; ++i) {
@@ -270,20 +273,22 @@ static void ui_refresh_status() {
     lv_label_set_text(lv_obj_get_child(ui_mach_start, 0), running_it ? "Running" : sarmed ? "Confirm" : LV_SYMBOL_PLAY "  Start");
     if (running_it || !g_machine_count) lv_obj_add_state(ui_mach_start, LV_STATE_DISABLED);
     else lv_obj_remove_state(ui_mach_start, LV_STATE_DISABLED);
-    // a new machine: DOS (fd_install.h) or Linux (linux_install.h), installed after a restart with no PC
+    // a new machine: DOS (fd_install.h), Linux (linux_install.h) or from a CD image on the card (fd_install.h),
+    // installed after a restart with no PC
     const bool net = !g_ssid.isEmpty();
     // (no machine: an empty card, where the panel opens by itself, with Wi-Fi on)
     const char* msg =
-        !net && !g_machine_count ? "No machine on the card yet: choose a Wi-Fi network on the right, then install DOS "
-                                   "or Linux."
-        : !net ? "A new machine, DOS or Linux: set up Wi-Fi first (a network on the right)."
-        : !g_machine_count ? "No machine yet: DOS (FreeDOS 1.4, an 18 MB download, then its own installer) or Linux "
-                             "(Sprig Linux, 10 MB, 140 MB on the card). The Tab5 restarts to install it."
-        : "A new machine: DOS (FreeDOS 1.4, an 18 MB download, then its own installer) or Linux (Sprig Linux, 10 MB, "
-          "140 MB on the card). The Tab5 restarts to install it.";
+        !net ? (g_machine_count ? "A new machine: DOS or Linux once Wi-Fi is set up (a network on the right); ISO from "
+                                  "an installer CD's .iso at the card's root."
+                                : "No machine on the card yet: choose a Wi-Fi network on the right, then install DOS or "
+                                  "Linux; or ISO, from an installer CD's .iso at the card's root.")
+        : g_machine_count ? "A new machine: DOS (FreeDOS 1.4, an 18 MB download), Linux (Sprig Linux, 10 MB, 140 MB on "
+                            "the card) or ISO (an installer CD's .iso on the card). The Tab5 restarts to install it."
+        : "No machine yet: DOS (FreeDOS 1.4, an 18 MB download), Linux (Sprig Linux, 10 MB, 140 MB on the card) or ISO "
+          "(an installer CD's .iso on the card). The Tab5 restarts to install it.";
     if (strcmp(lv_label_get_text(ui_inst_msg), msg)) lv_label_set_text(ui_inst_msg, msg);
-    for (lv_obj_t* b : {ui_dos_btn, ui_lnx_btn}) {
-      if (net) lv_obj_remove_state(b, LV_STATE_DISABLED);
+    for (lv_obj_t* b : {ui_dos_btn, ui_lnx_btn, ui_iso_btn}) {
+      if (b == ui_iso_btn ? g_fd_iso_count > 0 : net) lv_obj_remove_state(b, LV_STATE_DISABLED);
       else lv_obj_add_state(b, LV_STATE_DISABLED);
     }
   }
@@ -410,6 +415,7 @@ static void ui_show_modal(const char* ssid, bool secure) {
   g_modal_mode = MODAL_WIFI;
   lv_textarea_set_placeholder_text(ui_ta_ssid, "Network name");
   lv_obj_remove_flag(ui_pass_row, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(ui_iso_dd, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text(lv_obj_get_child(ui_connect_btn, 0), "Connect");
   lv_textarea_set_text(ui_ta_ssid, other ? "" : ssid);
   lv_textarea_set_text(ui_ta_pass, "");
@@ -430,15 +436,48 @@ static void ui_show_modal(const char* ssid, bool secure) {
   lv_obj_remove_state(other ? ui_ta_pass : ui_ta_ssid, LV_STATE_FOCUSED);
 }
 
-// The dialog asking for a new machine's name (Install DOS / Install Linux)
+// A machine's name from a CD image's file name: its letters, digits, - and _, lower case ("" if none)
+static String ui_iso_machine_name(const String& iso) {
+  String n;
+  for (int i = 0; i < (int)iso.length() - 4 && n.length() < 24; ++i) {
+    const char c = tolower((unsigned char)iso[i]);
+    if (isalnum((unsigned char)c) || c == '-' || c == '_') n += c;
+  }
+  return machine_name_ok(n.c_str()) ? n : String("");
+}
+
+// The CD image chosen in the dialog: its name suggested for the machine, unless one was typed
+static void ui_iso_chosen() {
+  g_update_ok = "";   // (another CD: Install asks again)
+  lv_label_set_text(lv_obj_get_child(ui_connect_btn, 0), "Install");
+  const String typed = lv_textarea_get_text(ui_ta_ssid);
+  const int sel = lv_dropdown_get_selected(ui_iso_dd);
+  if (sel >= g_fd_iso_count || (typed.length() && typed != g_iso_name)) return;
+  g_iso_name = ui_iso_machine_name(g_fd_isos[sel]);
+  lv_textarea_set_text(ui_ta_ssid, g_iso_name.c_str());
+}
+
+// The dialog asking for a new machine's name (Install DOS / Install Linux), and for Install ISO which CD image
 static void ui_show_name_modal(ModalMode mode) {
   g_modal_mode = mode;
   g_update_ok = "";
-  lv_label_set_text(ui_modal_title, mode == MODAL_DOS ? "Install DOS: the machine's name" : "Install Linux: the machine's name");
+  lv_label_set_text(ui_modal_title, mode == MODAL_DOS     ? "Install DOS: the machine's name"
+                                    : mode == MODAL_LINUX ? "Install Linux: the machine's name"
+                                                          : "Install from a CD image: the machine's name");
   lv_textarea_set_placeholder_text(ui_ta_ssid, "e.g. dos, games, linux");
   lv_textarea_set_text(ui_ta_ssid, "");
   lv_obj_remove_flag(ui_ta_ssid, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(ui_pass_row, LV_OBJ_FLAG_HIDDEN);
+  if (mode == MODAL_ISO) {   // the CD images at the card's root (ui_fill_machines), the first chosen
+    String opts;
+    for (int i = 0; i < g_fd_iso_count; ++i) opts += (i ? "\n" : "") + g_fd_isos[i];
+    lv_dropdown_set_options(ui_iso_dd, opts.c_str());
+    lv_dropdown_set_selected(ui_iso_dd, 0);
+    lv_obj_remove_flag(ui_iso_dd, LV_OBJ_FLAG_HIDDEN);
+    g_iso_name = "";
+  } else {
+    lv_obj_add_flag(ui_iso_dd, LV_OBJ_FLAG_HIDDEN);
+  }
   lv_label_set_text(ui_msg, "Letters, digits, - and _: tiny386-<name>.ini, files in /<name>");
   lv_obj_set_style_text_color(ui_msg, lv_color_hex(C_DIM), 0);
   lv_obj_add_flag(ui_spinner, LV_OBJ_FLAG_HIDDEN);
@@ -448,6 +487,7 @@ static void ui_show_name_modal(ModalMode mode) {
   lv_keyboard_set_textarea(ui_kb, ui_ta_ssid);
   lv_obj_add_state(ui_ta_ssid, LV_STATE_FOCUSED);
   lv_obj_remove_state(ui_ta_pass, LV_STATE_FOCUSED);
+  if (mode == MODAL_ISO) ui_iso_chosen();
 }
 
 static void ui_name_submit() {
@@ -457,7 +497,10 @@ static void ui_name_submit() {
     lv_obj_set_style_text_color(ui_msg, lv_color_hex(C_WARN), 0);
   };
   if (!machine_name_ok(name.c_str())) { warn("A name of letters, digits, - and _ (not \"default\")"); return; }
-  if (g_ssid.isEmpty()) { warn("Set up Wi-Fi first (a network on the right)"); return; }
+  const bool iso = g_modal_mode == MODAL_ISO;
+  const int sel = iso ? lv_dropdown_get_selected(ui_iso_dd) : 0;
+  if (iso && sel >= g_fd_iso_count) { warn("No CD image (.iso) at the card's root"); return; }
+  if (!iso && g_ssid.isEmpty()) { warn("Set up Wi-Fi first (a network on the right)"); return; }
   const bool update = g_modal_mode == MODAL_LINUX && lx_installed(name.c_str());
   if (machine_name_used(name.c_str()) && !update) { warn("That name is in use (its .ini or folder is on the card)"); return; }
   if (!name.equalsIgnoreCase(g_update_ok)) {   // asked once: the PC stops (installs run with no PC: install_mode_run)
@@ -467,7 +510,8 @@ static void ui_name_submit() {
     lv_label_set_text(lv_obj_get_child(ui_connect_btn, 0), "Restart");
     return;
   }
-  install_request(g_modal_mode == MODAL_DOS ? 'd' : 'l', name.c_str());
+  if (iso) install_request('i', (name + ":" + g_fd_isos[sel]).c_str());
+  else install_request(g_modal_mode == MODAL_DOS ? 'd' : 'l', name.c_str());
 }
 
 static void ui_connect_poll() {
@@ -530,6 +574,22 @@ static const lv_buttonmatrix_ctrl_t kb_ctrl[] = {
   KB_MODE(2), KB_FN(2), (lv_buttonmatrix_ctrl_t)6, KB_FN(2),
   KB_MODE(2)};
 
+// A list to choose from, in the panel's colours
+static void ui_style_dropdown(lv_obj_t* dd) {
+  lv_obj_set_style_text_font(dd, &px_font_24, 0);
+  lv_obj_set_style_bg_color(dd, lv_color_hex(C_DEEP), 0);
+  lv_obj_set_style_text_color(dd, lv_color_hex(C_ACCENT), 0);
+  lv_obj_set_style_border_color(dd, lv_color_hex(C_LINE), 0);
+  lv_obj_set_style_radius(dd, 0, 0);
+  lv_obj_t* l = lv_dropdown_get_list(dd);
+  lv_obj_set_style_text_font(l, &px_font_24, 0);
+  lv_obj_set_style_bg_color(l, lv_color_hex(C_DEEP), 0);
+  lv_obj_set_style_text_color(l, lv_color_hex(C_INK), 0);
+  lv_obj_set_style_radius(l, 0, 0);
+  lv_obj_set_style_bg_color(l, lv_color_hex(C_BAR), LV_PART_SELECTED | LV_STATE_CHECKED);
+  lv_obj_set_style_text_color(l, lv_color_hex(C_BLACK), LV_PART_SELECTED | LV_STATE_CHECKED);
+}
+
 static void ui_build_modal(lv_obj_t* scr) {
   ui_modal = lv_obj_create(scr);
   lv_obj_set_size(ui_modal, SCR_W, SCR_H);
@@ -568,6 +628,11 @@ static void ui_build_modal(lv_obj_t* scr) {
   }, false);
   lv_obj_set_size(show, 110, 58);
   ui_show_btn = lv_obj_get_child(show, 0);
+  ui_iso_dd = lv_dropdown_create(box);   // Install ISO's CD image, where the password goes
+  lv_obj_set_size(ui_iso_dd, lv_pct(100), 58);
+  ui_style_dropdown(ui_iso_dd);
+  lv_obj_add_event_cb(ui_iso_dd, [](lv_event_t*) { ui_iso_chosen(); }, LV_EVENT_VALUE_CHANGED, nullptr);
+  lv_obj_add_flag(ui_iso_dd, LV_OBJ_FLAG_HIDDEN);
 
   lv_obj_t* msg_row = lv_obj_create(box);
   lv_obj_set_size(msg_row, lv_pct(100), 40);
@@ -865,18 +930,7 @@ static void ui_setup() {
   ui_mach_dd = lv_dropdown_create(mc);
   lv_obj_set_pos(ui_mach_dd, 0, 0);
   lv_obj_set_size(ui_mach_dd, 400, 48);
-  lv_obj_set_style_text_font(ui_mach_dd, &px_font_24, 0);
-  lv_obj_set_style_bg_color(ui_mach_dd, lv_color_hex(C_DEEP), 0);
-  lv_obj_set_style_text_color(ui_mach_dd, lv_color_hex(C_ACCENT), 0);
-  lv_obj_set_style_border_color(ui_mach_dd, lv_color_hex(C_LINE), 0);
-  lv_obj_set_style_radius(ui_mach_dd, 0, 0);
-  lv_obj_t* ddl = lv_dropdown_get_list(ui_mach_dd);
-  lv_obj_set_style_text_font(ddl, &px_font_24, 0);
-  lv_obj_set_style_bg_color(ddl, lv_color_hex(C_DEEP), 0);
-  lv_obj_set_style_text_color(ddl, lv_color_hex(C_INK), 0);
-  lv_obj_set_style_radius(ddl, 0, 0);
-  lv_obj_set_style_bg_color(ddl, lv_color_hex(C_BAR), LV_PART_SELECTED | LV_STATE_CHECKED);
-  lv_obj_set_style_text_color(ddl, lv_color_hex(C_BLACK), LV_PART_SELECTED | LV_STATE_CHECKED);
+  ui_style_dropdown(ui_mach_dd);
   lv_obj_add_event_cb(ui_mach_dd, [](lv_event_t*) { g_start_armed = 0; ui_refresh_status(); }, LV_EVENT_VALUE_CHANGED,
                       nullptr);
   ui_mach_start = ui_button(mc, "", [](lv_event_t*) {   // two taps: the Tab5 restarts, the PC's work is lost
@@ -895,12 +949,17 @@ static void ui_setup() {
   lv_label_set_long_mode(ui_inst_msg, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(ui_inst_msg, lv_pct(100));
   lv_obj_set_pos(ui_inst_msg, 0, 58);
-  ui_dos_btn = ui_button(mc, LV_SYMBOL_DOWNLOAD "  Install DOS", [](lv_event_t*) { ui_show_name_modal(MODAL_DOS); }, true);
-  lv_obj_set_size(ui_dos_btn, (RW - 50 - 12) / 2, 46);
-  lv_obj_set_pos(ui_dos_btn, 0, 126);
-  ui_lnx_btn = ui_button(mc, LV_SYMBOL_DOWNLOAD "  Install Linux", [](lv_event_t*) { ui_show_name_modal(MODAL_LINUX); }, true);
-  lv_obj_set_size(ui_lnx_btn, (RW - 50 - 12) / 2, 46);
-  lv_obj_set_pos(ui_lnx_btn, (RW - 50 + 12) / 2, 126);
+  // Install: DOS, Linux, ISO (three to a row: "Install" is in the dialog's title)
+  constexpr int BW = (RW - 50 - 2 * 12) / 3;
+  ui_dos_btn = ui_button(mc, LV_SYMBOL_DOWNLOAD "  DOS", [](lv_event_t*) { ui_show_name_modal(MODAL_DOS); }, true);
+  ui_lnx_btn = ui_button(mc, LV_SYMBOL_DOWNLOAD "  Linux", [](lv_event_t*) { ui_show_name_modal(MODAL_LINUX); }, true);
+  ui_iso_btn = ui_button(mc, LV_SYMBOL_DRIVE "  ISO", [](lv_event_t*) { ui_show_name_modal(MODAL_ISO); }, true);
+  int bx = 0;
+  for (lv_obj_t* b : {ui_dos_btn, ui_lnx_btn, ui_iso_btn}) {
+    lv_obj_set_size(b, BW, 46);
+    lv_obj_set_pos(b, bx, 126);
+    bx += BW + 12;
+  }
   ui_caption(scr, "Machine", RX, DY, RW);
 
   ui_build_modal(scr);
