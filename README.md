@@ -53,9 +53,10 @@ v3.x for later ones: `CHIP=postv3 tools/build.sh upload`. A build for the wrong 
 ## First start: FreeDOS on an empty card
 
 1. Put an empty card in the Tab5 and switch it on. With nothing on the card, the settings panel opens with Wi-Fi
-   on: choose your network on the right, then tap **Install DOS** in the Machine frame and give the machine a name
-   (for example `dos`; tap again to confirm). The Tab5 restarts into its install mode, with no PC running, and shows
-   how it goes. (**Install Linux** sets up Sprig Linux instead: see [More machines](#more-machines-dos-and-linux-side-by-side).)
+   on: choose your network on the right, then tap **DOS** in the Machine frame and give the machine a name (for
+   example `dos`; tap again to confirm). The Tab5 restarts into its install mode, with no PC running, and shows how
+   it goes. (**Linux** sets up Sprig Linux instead, and **ISO** a PC that starts from an installer CD on the card:
+   see [More machines](#more-machines-dos-and-linux-side-by-side).)
 
    ![The settings panel on an empty card](docs/images/panel-install.png)
 
@@ -74,15 +75,13 @@ v3.x for later ones: `CHIP=postv3 tools/build.sh upload`. A build for the wrong 
 
    ![Installing](docs/images/fd-progress.png)
 
-While an installer runs, the code translator (below) is off and the PC runs a little slower; it is back on once
-the install is done.
-
 **Other ways to start:**
 
-- **An installer CD**: put the `.iso` of a bootable installer CD (for example FreeDOS's LiveCD) on the card, make an
-  empty hard disk (`.venv/bin/python tools/dosdisk.py new sdcard/C.IMG --mb 500`, copied to the card) and write a
-  `tiny386.ini` with `hda = /sdcard/C.IMG` and `cdc = /sdcard/<name>.iso` (see [Settings](#settings)). The BIOS tries
-  the hard disk first, so the PC starts from the CD while C: is empty, and from C: once a system is installed on it.
+- **An installer CD**: the Machine frame's **ISO** (below), or by hand: put the `.iso` of a bootable installer CD
+  (for example FreeDOS's LiveCD) on the card, make an empty hard disk (`.venv/bin/python tools/dosdisk.py new
+  sdcard/C.IMG --mb 500`, copied to the card) and write a `tiny386.ini` with `hda = /sdcard/C.IMG` and
+  `cdc = /sdcard/<name>.iso` (see [Settings](#settings)). The BIOS tries the hard disk first, so the PC starts from
+  the CD while C: is empty, and from C: once a system is installed on it.
 - **Prepare the card on a computer**: `.venv/bin/python tools/make_sdcard.py` makes `sdcard/C.IMG` (FreeDOS 1.4
   with all its packages, 32 MB), `sdcard/D.IMG` (504 MB, empty) and a matching `sdcard/tiny386.ini`. Copy the three
   files to the root of the card. It starts straight at the `C:\>` prompt.
@@ -93,9 +92,9 @@ The settings panel's **Machine** frame lists the machines on the card: `default`
 named N (`/tiny386-N.ini`, its files in the folder `/N`). Choose one and tap **Start** twice: the Tab5 restarts into
 it, and keeps starting it, through every restart, until you choose another.
 
-**Install DOS** and **Install Linux** make a new machine (a saved Wi-Fi network is needed): give it a name, tap
-again to confirm that the PC stops, and the Tab5 restarts into its install mode, with no PC running, then into the
-new machine.
+**DOS**, **Linux** and **ISO** install a new machine (DOS and Linux are downloaded: a saved Wi-Fi network is
+needed): give it a name, tap again to confirm that the PC stops, and the Tab5 restarts into its install mode, with no
+PC running, then into the new machine.
 
 - **DOS**: FreeDOS 1.4, as above: its installer starts in the new machine.
 - **Linux**: the latest release of [Sprig Linux](https://github.com/yejun/sprig-linux), a small Linux made for this
@@ -106,9 +105,15 @@ new machine.
 
   ![Sprig Linux's first start on the Tab5](docs/images/linux-boot.png)
 
+- **ISO**: a PC that starts from an installer CD. Copy the CD's `.iso` to the root of the card first (the web page's
+  SD card tab), then choose it in the dialog (the machine's name is suggested from it). The new machine gets an empty
+  hard disk (`C.IMG`, 512 MB, partitioned and formatted) and the CD in its drive; it starts from the CD while C: has
+  no system, and from C: once the installer has put one there. The CD stays in the drive (delete the `cdc` line in
+  its settings file to take it out).
+
 A name already on the card (its settings file or its folder) can't be used again, except to update Sprig Linux. If an
 install fails, the screen says why, and a tap goes back to the machine there was. Serial: `machines`,
-`machine <file>`, `install dos <name>`, `install linux <name>`.
+`machine <file>`, `install dos <name>`, `install linux <name>`, `install iso <name> [<file>.iso]`.
 
 ## Using it
 

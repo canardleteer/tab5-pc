@@ -461,8 +461,8 @@ static void lx_install_task(void*) {   // (as fd_install_task: its stack in PSRA
   }
 }
 
-// Install DOS or Linux as the machine name: the Tab5 restarts and does it before any PC starts (install_mode_run, the
-// .ino), then restarts into it
+// Install DOS ('d'), Linux ('l') or from an installer CD ('i', name "<name>:<the .iso at the card's root>") as the
+// machine name: the Tab5 restarts and does it before any PC starts (install_mode_run, the .ino), then restarts into it
 static void restart_tab5();   // (web.h)
 static void install_request(char kind, const char* name) {
   g_prefs.putString("install", String(kind) + ":" + name);

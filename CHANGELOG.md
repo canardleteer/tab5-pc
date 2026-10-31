@@ -11,6 +11,10 @@
   addresses above 256 MB, all "not RAM", onto one shared page).
 - The translator's two biggest functions are compiled for size: its code runs from flash, and translating mostly
   waits for it there. A block takes about 10% less time to translate (Linux starting: 47 -> 43 us a block).
+- The Machine frame's **ISO**, beside **DOS** and **Linux** (as the three now read): a new machine that starts from
+  an installer CD's `.iso` at the card's root, chosen in the dialog, with an empty 512 MB `C.IMG` (no download, no
+  Wi-Fi needed); it starts from C: once the installer has put a system there. Serial: `install iso <name> [<file>]`.
+- README: no longer says the translator is off while an installer runs (it has been on since 1.1.0).
 
 ## 1.2.1 (2026-10-28)
 

@@ -727,6 +727,17 @@ static void handle_serial() {
       if (!machine_name_ok(name.c_str())) Serial.println("install: a name of letters, digits, - and _");
       else if (machine_name_used(name.c_str()) && (dos || !lx_installed(name.c_str()))) Serial.println("install: that name is in use");
       else install_request(dos ? 'd' : 'l', name.c_str());   // (the Tab5 restarts into the install)
+    } else if (line.startsWith("install iso ")) {   // install iso <name> [<file>.iso]: as the panel's Install ISO
+      String name = line.substring(12), iso;
+      if (name.indexOf(' ') > 0) iso = name.substring(name.indexOf(' ') + 1), name = name.substring(0, name.indexOf(' '));
+      fd_find_isos();
+      if (iso.isEmpty() && g_fd_iso_count) iso = g_fd_isos[0];
+      bool found = false;
+      for (int i = 0; i < g_fd_iso_count; ++i) found |= g_fd_isos[i].equalsIgnoreCase(iso);
+      if (!machine_name_ok(name.c_str())) Serial.println("install: a name of letters, digits, - and _");
+      else if (machine_name_used(name.c_str())) Serial.println("install: that name is in use");
+      else if (!found) Serial.println("install: no such .iso at the card's root (1 MB or more)");
+      else install_request('i', (name + ":" + iso).c_str());
     } else if (line == "linux") {
       Serial.printf("linux: %s (%d%%)\n", g_lx_msg, (int)g_lx_pct);
     } else if (line == "reset") {
@@ -872,23 +883,30 @@ static int ne2000_ini_handler(void*, const char* section, const char* name, cons
   return 1;
 }
 
-// An install asked for in the settings panel (Install DOS / Install Linux, linux_install.h): the Tab5 restarted for it
-// and does it instead of starting a PC, with all the memory free and nothing else using the card or Wi-Fi, then
-// restarts into the new machine (DOS: FreeDOS's installer; Linux: its first start). If it fails it says why and, after
-// a tap on the screen or a minute, restarts into the machine there was. Wi-Fi: the saved network, joined here
-// directly (no web server, no PC network: they want a PC).
+// An install asked for in the settings panel (Install DOS / Install Linux / Install ISO, linux_install.h): the Tab5
+// restarted for it and does it instead of starting a PC, with all the memory free and nothing else using the card or
+// Wi-Fi, then restarts into the new machine (DOS: FreeDOS's installer; Linux: its first start; ISO: the CD). If it
+// fails it says why and, after a tap on the screen or a minute, restarts into the machine there was. Wi-Fi (not for
+// an ISO: nothing to download): the saved network, joined here directly (no web server, no PC network: they want a
+// PC).
 static void install_mode_run() {
   const String req = g_prefs.getString("install", "");
   if (req.length() < 3 || req[1] != ':') return;
   g_prefs.remove("install");   // (once: a crash doesn't start it again)
   const char kind = req[0];
-  const String name = req.substring(2);
-  const String title = String(kind == 'd' ? "Installing DOS" : "Installing Linux") + " as " + name;
+  String name = req.substring(2), iso;
+  if (kind == 'i' && name.indexOf(':') > 0) iso = name.substring(name.indexOf(':') + 1), name = name.substring(0, name.indexOf(':'));
+  const String title = (kind == 'd' ? String("Installing DOS") : kind == 'l' ? String("Installing Linux") : "Installing from " + iso) +
+                       " as " + name;
   g_held = true;   // (no PC to hold: pc_hold returns at once)
   String failed;
-  show_status(title.c_str(), "Connecting to Wi-Fi ...");
-  wifi_load();
-  if (g_ssid.isEmpty()) {
+  if (kind != 'i') {   // (from a CD image: nothing to download)
+    show_status(title.c_str(), "Connecting to Wi-Fi ...");
+    wifi_load();
+  }
+  if (kind == 'i') {
+    if (iso.isEmpty()) failed = "No CD image given";
+  } else if (g_ssid.isEmpty()) {
     failed = "No Wi-Fi network is set up";
   } else {
     heap_caps_malloc_extmem_enable(512);   // (as wifi_enable: lwIP's packets in PSRAM)
@@ -898,28 +916,32 @@ static void install_mode_run() {
     if (WiFi.status() != WL_CONNECTED) failed = "Could not connect to " + g_ssid;
   }
   if (failed.isEmpty()) {
-    WiFi.setSleep(false);   // (modem power save: ~50 KB/s)
-    g_wifi = WIFI_UP;
-    Serial.printf("install: %s, Wi-Fi up (DMA-capable internal RAM %u free, PSRAM %u)\n", req.c_str(),
+    if (kind != 'i') {
+      WiFi.setSleep(false);   // (modem power save: ~50 KB/s)
+      g_wifi = WIFI_UP;
+    }
+    Serial.printf("install: %s%s (DMA-capable internal RAM %u free, PSRAM %u)\n", req.c_str(), kind != 'i' ? ", Wi-Fi up" : "",
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL),
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    if (kind == 'd') fd_install_start(name.c_str());
+    if (kind == 'i') fd_install_start(name.c_str(), iso.c_str());
+    else if (kind == 'd') fd_install_start(name.c_str());
     else lx_install_start(name.c_str());
+    const bool fd = kind != 'l';   // (fd_install.h's, DOS or the CD)
     String shown;
     for (;;) {
-      const FdState st = kind == 'd' ? g_fd_state : g_lx_state;
-      const char* msg = kind == 'd' ? g_fd_msg : g_lx_msg;
+      const FdState st = fd ? g_fd_state : g_lx_state;
+      const char* msg = fd ? g_fd_msg : g_lx_msg;
       if (shown != msg) show_status(title.c_str(), (shown = msg).c_str());
       if (st != FD_RUNNING) break;
       delay(250);
     }
-    if ((kind == 'd' ? g_fd_state : g_lx_state) == FD_IDLE) {   // done: the new machine from now on (DOS: its installer)
+    if ((fd ? g_fd_state : g_lx_state) == FD_IDLE) {   // done: the new machine from now on (DOS: its installer)
       machine_choose(("tiny386-" + name + ".ini").c_str());
       show_status(title.c_str(), "Done. Restarting into it ...");
       delay(1500);
       tab5_restart();
     }
-    failed = kind == 'd' ? g_fd_msg : g_lx_msg;   // (FD_FAILED)
+    failed = fd ? g_fd_msg : g_lx_msg;   // (FD_FAILED)
   }
   show_status(("The install failed: " + failed).c_str(), "Tap the screen to go back (or wait a minute)");
   for (int i = 0; i < 600; ++i) {

@@ -3,6 +3,8 @@
 // installer as its first disk, C.IMG as its second (drive D: to the installer, as a PC's own disk is when it starts
 // from a USB stick) and an empty CD-ROM drive (the installer stops with "CD-ROM not configured" without one). The user
 // goes through FreeDOS's own installer; when the PC restarts with FreeDOS on C.IMG, it starts from C.IMG alone.
+// Or, from an installer CD's .iso at the card's root (the panel's Install ISO; no download): a blank C.IMG, and the PC
+// starts from the CD while C.IMG has no system.
 //
 // The download comes in 256 KB ranges, each received whole before anything is written to the card (the card and the
 // Wi-Fi chip share the SDMMC host: see web.h, h_put), and is unzipped as it comes (the ROM's tinfl), its CRC checked.
@@ -56,10 +58,15 @@ static volatile int g_fd_pct = 0;       // the download's progress
 static char g_fd_msg[120] = "";         // what it is doing, or why it failed (the settings panel shows it)
 static bool g_setup_needed = false;     // no disks on the card (load_config): the panel opens, to install a machine
 // tiny386.ini's [tab5] install: 1, FreeDOS's installer is running (from FDSETUP.IMG); 2, the PC starts from an
-// installer CD, and C.IMG has no system yet (set up by 1.2.0 and before, which offered an .iso on an empty card).
-// (Installs ran with the translator off for a while: two of five had stopped partway, from the code sync fixed since,
+// installer CD, and C.IMG has no system yet. (Installs ran with the translator off for a while: two of five had stopped partway, from the code sync fixed since,
 // src/t386_i386.c.)
 static int g_install_mode = 0;
+// The installer CD images at the card's root (fd_find_isos: the panel's Install ISO), and the install's own CD image
+// ("": FreeDOS's download)
+static constexpr int FD_MAX_ISOS = 8;
+static String g_fd_isos[FD_MAX_ISOS];
+static int g_fd_iso_count = 0;
+static String g_fd_iso;
 
 static void fd_say(const char* fmt, ...) {
   va_list ap;
@@ -264,6 +271,35 @@ static const char* FD_INI_FINAL =
     "mem_size = 16M\r\nvga_mem_size = 2M\r\n"
     "; 1: the hard disks' geometry in the CMOS (some systems want it, others not)\r\nfill_cmos = 1\r\n"
     "[cpu]\r\n; 3/4/5/6 = 386/486/586/686\r\ngen = 4\r\n; 1 = x87 maths coprocessor\r\nfpu = 1\r\n";
+
+// The installer CD images at the card's root (1 MB or more; not a machine's NOCD.ISO), into g_fd_isos
+static void fd_find_isos() {
+  g_fd_iso_count = 0;
+  DIR* d = opendir("/sdcard");
+  if (!d) return;
+  while (struct dirent* e = readdir(d)) {
+    const size_t n = strlen(e->d_name);
+    if (n < 5 || strcasecmp(e->d_name + n - 4, ".iso") || !strcasecmp(e->d_name, "NOCD.ISO")) continue;
+    const String path = "/sdcard/" + String(e->d_name);
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= (1 << 20) && g_fd_iso_count < FD_MAX_ISOS)
+      g_fd_isos[g_fd_iso_count++] = e->d_name;
+  }
+  closedir(d);
+  std::sort(g_fd_isos, g_fd_isos + g_fd_iso_count, [](const String& a, const String& b) {
+    return strcasecmp(a.c_str(), b.c_str()) < 0;
+  });
+}
+
+static const char* FD_INI_ISO =
+    "; Tab5 PC machine settings, written by the firmware: the PC starts from the CD (%s) while C.IMG has no\r\n"
+    "; files, and from C.IMG once something is installed on it (the BIOS tries the hard disk first). Without the CD\r\n"
+    "; in the drive: delete the cdc line.\r\n"
+    "[pc]\r\nhda = @/C.IMG\r\ncdc = /sdcard/%s\r\n"
+    "mem_size = 16M\r\nvga_mem_size = 2M\r\nfill_cmos = 1\r\n"
+    "[cpu]\r\ngen = 4\r\nfpu = 1\r\n"
+    "; until a system is on C.IMG (the firmware deletes this then)\r\n"
+    "[tab5]\r\ninstall = 2\r\n";
 
 // text into the file at path, in pieces under a sector, unbuffered: FatFs copies each through its own sector buffer.
 // (Given 512 bytes or more at a sector's start, FatFs hands the caller's memory to the card's DMA, which needs it
@@ -504,6 +540,14 @@ static bool fd_install_run() {
     struct stat st;
     if (stat(FD_DISK, &st) == 0) { fd_say("%s/C.IMG is already on the card: delete it first (it isn't replaced)", g_fd_dir.c_str() + 7); break; }
     mkdir(g_fd_dir.c_str(), 0777);
+    if (g_fd_iso.length()) {   // the CD on the card: a blank C: drive, and the PC starts from the CD
+      String ini = FD_INI_ISO;
+      ini.replace("%s", g_fd_iso);
+      if (!fd_make_disk()) break;
+      if (!fd_write_file(FD_INI, fd_ini_text(ini.c_str()).c_str())) { fd_say("Writing to the card failed"); unlink(FD_DISK); break; }
+      ok = true;
+      break;
+    }
     if (!fd_download_psram_tls(buf, dict, inf)) break;
     if (!fd_make_disk()) { unlink(FD_SETUP); break; }
     if (!fd_write_file(FD_NOCD, "") || !fd_write_file(FD_INI, fd_ini_text(FD_INI_INSTALL).c_str())) {
@@ -534,13 +578,15 @@ static void fd_install_task(void*) {
     // (install_mode_run remembers the machine and restarts; not from here, a task with its stack in PSRAM, which
     // mustn't write to flash: NVS)
     g_fd_state = FD_IDLE;
-    fd_say("Done. Restarting into FreeDOS's installer ...");
+    fd_say(g_fd_iso.length() ? "Done. Restarting from the CD ..." : "Done. Restarting into FreeDOS's installer ...");
   }
 }
 
-// The install of the machine named name (in install mode)
-static void fd_install_start(const char* name) {
+// The install of the machine named name (in install mode): FreeDOS's download, or from the CD image iso at the card's
+// root
+static void fd_install_start(const char* name, const char* iso = "") {
   if (g_fd_state == FD_RUNNING) return;
+  g_fd_iso = iso;
   fd_use("/sdcard/tiny386-" + String(name) + ".ini");
   if (!g_fd_task && xTaskCreatePinnedToCoreWithCaps(fd_install_task, "fdinstall", 24576, nullptr, 1, &g_fd_task, 0,
                                                     MALLOC_CAP_SPIRAM) != pdPASS) {
