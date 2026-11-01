@@ -468,9 +468,9 @@ static void ui_iso_chosen() {
 static void ui_show_name_modal(ModalMode mode) {
   g_modal_mode = mode;
   g_update_ok = "";
-  lv_label_set_text(ui_modal_title, mode == MODAL_DOS     ? "Install DOS: the machine's name"
-                                    : mode == MODAL_LINUX ? "Install Linux: the machine's name"
-                                                          : "Install from a CD image: the machine's name");
+  lv_label_set_text(ui_modal_title, mode == MODAL_DOS     ? "Install DOS: machine name"
+                                    : mode == MODAL_LINUX ? "Install Linux: machine name"
+                                                          : "Install ISO: machine name");
   lv_textarea_set_placeholder_text(ui_ta_ssid, "e.g. dos, games, linux");
   lv_textarea_set_text(ui_ta_ssid, "");
   lv_obj_remove_flag(ui_ta_ssid, LV_OBJ_FLAG_HIDDEN);
@@ -485,7 +485,7 @@ static void ui_show_name_modal(ModalMode mode) {
   } else {
     lv_obj_add_flag(ui_iso_dd, LV_OBJ_FLAG_HIDDEN);
   }
-  lv_label_set_text(ui_msg, "Letters, digits, - and _: tiny386-<name>.ini, files in /<name>");
+  lv_label_set_text(ui_msg, "Letters, digits, - and _ only");
   lv_obj_set_style_text_color(ui_msg, lv_color_hex(C_DIM), 0);
   lv_obj_add_flag(ui_spinner, LV_OBJ_FLAG_HIDDEN);
   lv_label_set_text(lv_obj_get_child(ui_connect_btn, 0), "Install");
@@ -607,9 +607,11 @@ static void ui_build_modal(lv_obj_t* scr) {
   lv_obj_set_style_radius(ui_modal, 0, 0);
   lv_obj_remove_flag(ui_modal, LV_OBJ_FLAG_SCROLLABLE);
 
-  lv_obj_t* box = ui_card(ui_modal, 240, 24, 800, 340);
+  lv_obj_t* box = ui_card(ui_modal, 240, 14, 800, 0);   // as tall as what it shows (at most ~358: the keyboard's
+  lv_obj_set_height(box, LV_SIZE_CONTENT);              // top is at y 400, and the box ~12 lower: ui_modal's padding)
+  lv_obj_set_style_pad_all(box, 18, 0);
   lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_row(box, 14, 0);
+  lv_obj_set_style_pad_row(box, 12, 0);
   lv_obj_set_style_shadow_width(box, 1, 0);   // a hard shadow, as a dialog box had
   lv_obj_set_style_shadow_offset_x(box, 16, 0);
   lv_obj_set_style_shadow_offset_y(box, 16, 0);
@@ -642,7 +644,7 @@ static void ui_build_modal(lv_obj_t* scr) {
   lv_obj_add_flag(ui_iso_dd, LV_OBJ_FLAG_HIDDEN);
 
   lv_obj_t* msg_row = lv_obj_create(box);
-  lv_obj_set_size(msg_row, lv_pct(100), 40);
+  lv_obj_set_size(msg_row, lv_pct(100), 34);
   lv_obj_set_style_bg_opa(msg_row, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(msg_row, 0, 0);
   lv_obj_set_style_pad_all(msg_row, 0, 0);

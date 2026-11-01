@@ -1534,6 +1534,7 @@ static bool jit_decode(const u8 *p, int max, bool code16, JIns *in)
 // how an instruction is translated
 enum {
 	K_INTERP,     // run in place by the fast path
+	K_REPSTR,     // REP MOVS, REP STOS: plain RAM in a page, forwards, by jit_h_repstr; else as K_INTERP
 	K_NOP, K_ALU, K_TEST, K_MOV, K_LEA, K_INCDEC, K_PUSH, K_POP, K_XCHG, K_CBW, K_CWD, K_MOVX, K_SHIFT, K_NOTNEG,
 	K_SHXD, K_BT, K_IMUL, K_JCC, K_JMP, K_CALL, K_RET, K_LOOP, K_JMPI, K_CALLI, K_SETCC, K_MOVSEG, K_POPSEG, K_LDSEG, K_LEAVE,
 	K_CLD, K_STD, K_ADCSBB, K_ROT, K_SHIFTCL, K_MULDIV, K_IN, K_OUT, K_STR, K_FLAGOP, K_PUSHA, K_POPA, K_XLAT,
@@ -1746,6 +1747,7 @@ static void jt_ea(const JIns *in, int extra)
 			else e_add(T0, from, T1);
 		}
 		else if (from < 0) e_li(T0, disp);
+		else if (!disp) e_mv(T0, from);   // (nothing when the sum is in t0 already)
 		else if ((s32) disp >= -2048 && (s32) disp < 2048) e_addi(T0, from, disp);
 		else { e_li(T1, disp); e_add(T0, from, T1); }
 	}
@@ -2953,9 +2955,10 @@ static void jit_before(CPUI386 *cpu, struct JitBefore *b)
 }
 static int jit_after(CPUI386 *cpu, const struct JitBefore *b, bool ok, uword next);
 
+static bool jit_count_ops;   // counting the instructions run in place, by opcode (since the first "jit ops")
 static int jit_h_interp(CPUI386 *cpu, uword eip, uword next)
 {
-	{   // (counted by opcode: serial "jit ops"; with paging, if the TLB has the page)
+	if (jit_count_ops) {   // (counted by opcode: serial "jit ops"; with paging, if the TLB has the page)
 		uword l = cpu->seg[SEG_CS].base + eip;
 		if (cpu->cr0 & CR0_PG) {
 			struct ftlb_entry *e = &ftlb[(l >> 12) & (FTLB_N - 1)];
@@ -3412,6 +3415,7 @@ static void jt_classify(JIns *in, u8 mode, bool *ends)
 	case 0xe6: case 0xe7: case 0xee: case 0xef: if (mode & JM_IO) { in->kind = K_OUT; in->fl = FL_NONE; } return;
 	case 0xa4: case 0xa5: case 0xaa: case 0xab: case 0xac: case 0xad:
 		if (!in->rep) { in->kind = K_STR; in->fl = FL_NONE; }
+		else if (b <= 0xab && !(b >= 0xa6 && b <= 0xa9)) in->kind = K_REPSTR;   // (FL_READ, as run in place)
 		return;
 	case 0xa6: case 0xa7: case 0xae: case 0xaf:
 		if (!in->rep) { in->kind = K_STR; in->fl = FL_WRITE; }
@@ -3498,6 +3502,8 @@ static unsigned jt_segs_used(const JIns *in)
 		break;
 	case K_INTERP:
 		return 0;
+	case K_REPSTR:
+		return 1 << SEG_ES | (in->op <= 0xa5 ? 1 << (in->seg >= 0 ? in->seg : SEG_DS) : 0);
 	}
 	if (in->has_modrm && in->mod != 3 && in->kind != K_LEA) return 1 << (in->seg >= 0 ? in->seg : in->dseg);
 	return 0;
@@ -3964,6 +3970,128 @@ static bool jt_fpu_call_core(const JIns *in, u32 *r)
 	return true;
 }
 
+// 32-bit DIV / IDIV of a 64-bit dividend hi:lo (EDX:EAX) by d, from translated code (K_MULDIV): the quotient, and the
+// remainder in jit_div_rem; jit_div_fault 1 if the CPU raises #DE instead (d 0, or a quotient that doesn't fit)
+static u32 jit_div_rem, jit_div_fault;
+static u32 jit_h_div64(u32 lo, u32 hi, u32 d, u32 sgn)
+{
+	const uint64_t n = (uint64_t) hi << 32 | lo;
+	jit_div_fault = 1;
+	if (!d) return 0;
+	if (sgn) {
+		const int64_t sn = (int64_t) n, sd = (s32) d;
+		if (sn == INT64_MIN && sd == -1) return 0;
+		const int64_t q = sn / sd;
+		if (q != (s32) q) return 0;
+		jit_div_rem = (u32) (sn % sd);
+		jit_div_fault = 0;
+		return (u32) q;
+	}
+	const uint64_t q = n / d;
+	if (q >> 32) return 0;
+	jit_div_rem = (u32) (n % d);
+	jit_div_fault = 0;
+	return (u32) q;
+}
+
+// REP MOVS / STOS from translated code (K_REPSTR), when both sides are plain RAM within a page each and DF is clear:
+// bytes of elements of n (kind & 7) at host address d, from s (MOVS: element by element where they overlap with d
+// after s, as the CPU does, else as memcpy) or of the value s (kind & 0x100: STOS)
+static void jit_h_repstr(u8 *d, uintptr_t s, u32 bytes, u32 kind)
+{
+	const u32 n = kind & 7;
+	if (kind & 0x100) {
+		if (n == 1) { memset(d, (int) s, bytes); return; }
+		for (u32 i = 0; i < bytes; i += n) memcpy(d + i, &s, n);   // (little-endian: the low n bytes)
+		return;
+	}
+	const u8 *src = (const u8 *) s;
+	if (d + bytes <= src || d >= src + bytes || d < src) { memmove(d, src, bytes); return; }   // (d before s: as forwards)
+	for (u32 i = 0; i < bytes; i += n) { u32 v; memcpy(&v, src + i, n); memcpy(d + i, &v, n); }
+}
+
+// the linear address of seg:(E)SI or (E)DI (reg 6 or 7) into d, and to slow (the K_REPSTR's) unless the bytes in a1
+// from it lie in one page of plain RAM (write: without translated code), not wrapping at 64 KB, and in real mode
+// below 1 MB (misaligned is fine: jit_h_repstr copies with memcpy). With paging, d is then its host address through
+// the fast path's TLB: a miss (not mapped yet, not RAM, or a write to a page with translated code: ftlb_miss gives
+// such pages no write entry) to slow
+static void jt_repstr_side(const JIns *in, int d, int reg, int seg, int n, bool write, u32 **slow, int *ns)
+{
+	const bool paged = jt_mode & JM_PAGED;
+	if (in->adsz16) {
+		jt_zext(d, jg[reg], 16);
+		e_add(T6, d, A1);
+		e_li(T0, 0x10000);
+		slow[(*ns)++] = e_branch(BLTU, T0, T6);
+	} else {
+		e_mv(d, jg[reg]);
+	}
+	if (jt_based(seg)) { e_lw(T6, R_CPU, SEG_BASE_OFF(seg)); e_add(d, d, T6); }
+	if (!(jt_mode & JM_PROTECTED)) {   // (the A20 gate's wrapping: the interpreter's; paging needs protected mode)
+		e_add(T6, d, A1);
+		e_li(T0, 0x100000);
+		slow[(*ns)++] = e_branch(BLTU, T0, T6);
+	}
+	e_slli(T6, d, 20);
+	e_srli(T6, T6, 20);
+	e_add(T6, T6, A1);
+	e_li(T0, 0x1000);
+	slow[(*ns)++] = e_branch(BLTU, T0, T6);   // past its page
+	if (paged) {   // (jit_r_tlb: t0 in, t1 out, t6 and a6 used)
+		e_mv(T0, d);
+		e_call_near(jit_r_tlb[write][0]);
+		slow[(*ns)++] = e_branch(BEQ, T1, X0);
+		e_mv(d, T1);
+		return;
+	}
+	e_srli(T6, d, 12);
+	e_add(T6, T6, R_MAP);
+	e_lb(T6, T6, 0);
+	slow[(*ns)++] = write ? e_branch(BNE, T6, X0) : e_branch(BLT, T6, X0);
+	e_add(d, d, R_MEM);   // (its host address)
+}
+
+static void jt_repstr(const JIns *in, int bits)
+{
+	const u8 b = in->op;
+	const int n = (b & 1) ? bits / 8 : 1, sh = n == 1 ? 0 : n == 2 ? 1 : 2;
+	const bool movs = b <= 0xa5;
+	jt_flags_store();   // (both ways: the interpreter's needs them, and after it the flags are in cpu->cc)
+	u32 *slow[10], *none;
+	int ns = 0;
+	if (in->adsz16) jt_zext(A0, jg[1], 16); else e_mv(A0, jg[1]);   // the count: none, nothing done
+	none = e_branch(BEQ, A0, X0);
+	e_lw(T6, R_CPU, CPU_OFF(flags));
+	e_andi(T6, T6, DF);
+	slow[ns++] = e_branch(BNE, T6, X0);
+	e_li(T6, 0x1000 >> sh);
+	slow[ns++] = e_branch(BLTU, T6, A0);
+	e_slli(A1, A0, sh);   // the bytes
+	jt_repstr_side(in, A2, 7, SEG_ES, n, true, slow, &ns);   // (host addresses: a2 the destination, a3 the source)
+	if (movs) jt_repstr_side(in, A3, 6, in->seg >= 0 ? in->seg : SEG_DS, n, false, slow, &ns);
+	else jt_get_r(A3, 0, n * 8);
+	e_mv(T1, A1);
+	e_mv(A0, A2);
+	e_mv(A2, T1);
+	e_mv(A1, A3);
+	e_li(A3, n | (movs ? 0 : 0x100));
+	e_call((const void *) jit_h_repstr);
+	if (in->adsz16) jt_zext(T1, jg[1], 16); else e_mv(T1, jg[1]);
+	e_slli(T1, T1, sh);   // (the bytes again: the call keeps no argument)
+	for (int r = 7; r >= (movs ? 6 : 7); r--) {
+		e_add(T2, jg[r], T1);
+		if (in->adsz16) jt_set_r(r, T2, 16, false); else e_mv(jg[r], T2);
+	}
+	if (in->adsz16) jt_set_r(1, X0, 16, false); else e_mv(jg[1], X0);
+	u32 *done = e_jump();
+	for (int k = 0; k < ns; k++) j_bind(slow[k], jp);
+	jt_interp(in);
+	u32 *done2 = e_jump();
+	j_bind(none, jp);
+	j_bind(done, jp);
+	j_bind(done2, jp);
+}
+
 static JIT_SMALL void jt_emit(const JIns *in)
 {
 	int bits = in->opsz16 ? 16 : 32;
@@ -4275,6 +4403,8 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		}
 		if (!(b & 1)) bits = 8;
 		if (b == 0xc6 || b == 0xc7) { jt_imm(in, T2, in->imm); jt_put_e(in, T2, bits, false, true); }
+		else if ((b == 0x89 || b == 0x8b) && in->mod == 3 && bits == 32)   // register to register: one move
+			e_mv(jg[b == 0x89 ? in->rm : in->reg], jg[b == 0x89 ? in->reg : in->rm]);
 		else if (b == 0x88 || b == 0x89) { jt_get_r(T2, in->reg, bits); jt_put_e(in, T2, bits, false, true); }
 		else { jt_get_e(in, T2, bits, false); jt_set_r(in->reg, T2, bits, true); }
 		break;
@@ -4322,6 +4452,14 @@ static JIT_SMALL void jt_emit(const JIns *in)
 	case K_SHIFT: {
 		if (!(b & 1)) bits = 8;
 		int n = (b < 0xd0 ? in->imm : 1) & 31;
+		if (!live && bits == 32 && in->mod == 3) {   // a register, its flags not read: in place
+			const int d = jg[in->rm];
+			if (in->reg == 5) e_srli(d, d, n);
+			else if (in->reg == 7) e_srai(d, d, n);
+			else e_slli(d, d, n);
+			jt_pf = PF_DEAD;
+			break;
+		}
 		jt_get_e(in, T2, bits, true);
 		if (in->reg == 5) e_srli(A1, T2, n);
 		else if (in->reg == 7) { jt_sext(A2, T2, bits); e_srai(A1, A2, n); }
@@ -4714,9 +4852,10 @@ static JIT_SMALL void jt_emit(const JIns *in)
 			jt_pf = PF_NONE;
 			break;
 		}
-		// DIV, IDIV: whatever would fault (and tiny386's CPU-detection quirks, and 64-bit dividends) goes to
-		// the interpreter, before anything changes
+		// DIV, IDIV: whatever would fault (and tiny386's CPU-detection quirks) goes to the interpreter, before
+		// anything changes
 		JStub *st = jt_stub(STUB_EXIT);
+		u32 *big = NULL;
 		st->eip = in->eip;
 		bool sgn = op == 7;
 		if (bits == 8) { jt_get_r(T2, 0, 16); if (sgn) { jt_sext(T2, T2, 16); jt_sext(A0, A0, 8); } }
@@ -4727,8 +4866,20 @@ static JIT_SMALL void jt_emit(const JIns *in)
 			if (sgn) jt_sext(A0, A0, 16);
 		} else {
 			e_mv(T2, jg[0]);
-			if (sgn) { e_srai(A1, jg[0], 31); st->at = e_branch(BNE, A1, jg[2]); }
-			else st->at = e_branch(BNE, jg[2], X0);
+			u32 *small = sgn ? (e_srai(A1, jg[0], 31), e_branch(BEQ, A1, jg[2])) : e_branch(BEQ, jg[2], X0);
+			// a 64-bit dividend (a 16.16 fixed-point divide: EDX:EAX = a << 16): jit_h_div64; a zero divisor or a quotient
+			// too big: the interpreter (#DE), before anything changes
+			e_mv(A2, A0);
+			e_mv(A0, jg[0]);
+			e_mv(A1, jg[2]);
+			e_li(A3, sgn);
+			e_call((const void *) jit_h_div64);
+			e_lw_abs(T6, &jit_div_fault);
+			st->at = e_branch(BNE, T6, X0);
+			e_mv(jg[0], A0);
+			e_lw_abs(jg[2], &jit_div_rem);
+			big = e_jump();
+			j_bind(small, jp);
 		}
 		JStub *z = jt_stub(STUB_EXIT);
 		z->eip = in->eip;
@@ -4762,6 +4913,7 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		if (bits == 8) { jt_set_r(0, A1, 8, false); jt_set_r(4, A2, 8, false); }
 		else if (bits == 16) { jt_set_r(0, A1, 16, false); jt_set_r(2, A2, 16, false); }
 		else { e_mv(jg[0], A1); e_mv(jg[2], A2); }
+		if (big) j_bind(big, jp);
 		break;
 	}
 	case K_IN: case K_OUT: {
@@ -5238,6 +5390,9 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		jt_link_exit(jt_target(in, disp));
 		break;
 	}
+	case K_REPSTR:
+		jt_repstr(in, bits);
+		break;
 	default:
 		jt_interp(in);
 		break;
@@ -5739,6 +5894,11 @@ void t386_jit_ops_report(char *buf, int len)   // the opcodes run in place most
 	static const char *const modes[4] = { "real", "v86", "pm16", "pm32" };
 	int n = 0;
 	buf[0] = 0;
+	if (!jit_count_ops) {   // (counting costs every instruction run in place a little: from now on only)
+		jit_count_ops = true;
+		snprintf(buf, len, "counting the instructions run in place from now on: ask again\n");
+		return;
+	}
 	if (!jit_interp_ops) return;
 	for (int k = 0; k < 20 && n < len - 40; k++) {
 		int best = -1;
@@ -5984,6 +6144,7 @@ void t386_jit_hold_off(void)
 	__sync_synchronize();
 	t386_jit_hold = 0;
 }
+
 static bool jit_exec(CPUI386 *cpu, int stepcount)
 {
 	t386_jit_inside = 1;

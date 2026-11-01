@@ -141,7 +141,8 @@ right button, tap and touch again to drag. DOS programs need a mouse driver (CTM
 **The side panels** beside the PC's picture, as on a PC's case: on the left **POWER** (hold it a second: the PC is
 off; tap it: on again, starting afresh; the PC also goes off when its system powers it off, e.g. FreeDOS's
 `FDAPM POWEROFF`), **RESET** (hold it a second), **PAUSE** (the screen dims, the sound stops) and **SETUP** (the
-settings panel); on the right the power light (green on, amber paused), the disk light and the battery. A ring
+settings panel); on the right the power light (green on, amber paused), the disk light (amber; both dim when off, as a real LED's
+lens) and the battery (red when low). A ring
 fills around POWER's or RESET's icon while you hold it; a short tap on either does nothing while the PC runs.
 
 **Sound**: the PC speaker, the Sound Blaster 16 (`BLASTER=A220 I5 D1 H5 T6`) and AdLib play through the Tab5's

@@ -8,7 +8,8 @@
 //   reset     held SIDE_HOLD_MS: a cold start (as the settings panel's Reset PC); a ring fills around the icon
 //   pause     a tap: paused (the backlight dimmed, no sound), a tap again: on
 //   setup     a tap: the settings panel
-//   lights    power (green on, amber paused, dark off), disk (the PC's disk used lately), the battery
+//   lights    power (green on, amber paused, dim green off), disk (amber: the PC's disk used lately; dim when not),
+//             the battery (grey; red at 15% or less)
 // Each panel is an LVGL display of its own (SIDE_W x SCR_H, anti-aliased), drawn where something changed and put on
 // the panel by the PPA (settings_ui.h's ppa_blit), only while the settings panel is closed. Drawn at once when
 // something changed (lv_refr_now), not by LVGL's timers: nothing here moves by itself, and LVGL run every 10 ms
@@ -28,7 +29,7 @@ static int sb_y(int i) { return 104 + i * 170; }   // a button's centre
 static constexpr uint32_t K_CASE = 0x202428, K_EDGE = 0x080C10, K_KEY = 0x383C40, K_KEY_RIM = 0x181C20,
                           K_KEY_LIGHT = 0x404448, K_KEY_DOWN = 0x282C30, K_INK = 0xDDE2E8, K_LABEL = 0x9AA2AC,
                           K_INK_OFF = 0x575D66, K_WELL = 0x101418, K_WELL_RIM = 0x303438, K_GREEN = 0x3DDC84,
-                          K_AMBER = 0xFFB300, K_RED = 0xF0524F, K_DARK = 0x3A3F46;
+                          K_AMBER = 0xFFB300, K_RED = 0xF0524F;
 
 struct SideState {   // what is shown
   bool pressed[SB_N], enabled[SB_N], paused, off;
@@ -243,8 +244,8 @@ static SideState side_wanted(int64_t now) {
   return s;
 }
 
-static void side_light(lv_obj_t* led, uint32_t color, bool lit) {
-  lv_led_set_color(led, lv_color_hex(lit ? color : K_DARK));
+static void side_light(lv_obj_t* led, uint32_t color, bool lit) {   // off: its colour dim, as a real LED's lens
+  lv_led_set_color(led, lv_color_hex(color));
   if (lit) lv_led_on(led); else lv_led_off(led);
 }
 
@@ -290,7 +291,7 @@ static int side_show(const SideState& s) {
       const int l = s.batt_level;
       icon = l > 85 ? LV_SYMBOL_BATTERY_FULL : l > 60 ? LV_SYMBOL_BATTERY_3 : l > 35 ? LV_SYMBOL_BATTERY_2
            : l > 10 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
-      color = l <= 15 ? K_RED : l <= 30 ? K_AMBER : K_GREEN;
+      if (l <= 15) color = K_RED;   // else grey: only a low battery stands out
       snprintf(text, sizeof(text), "%s%d%%", s.batt_charging ? LV_SYMBOL_CHARGE " " : "", l);
     } else {
       snprintf(text, sizeof(text), s.batt_state == BatteryPresence::Absent ? "USB" : "...");

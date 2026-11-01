@@ -56,6 +56,20 @@
   an installer CD's `.iso` at the card's root, chosen in the dialog, with an empty 512 MB `C.IMG` (no download, no
   Wi-Fi needed); it starts from C: once the installer has put a system there. Serial: `install iso <name> [<file>]`.
 - README: no longer says the translator is off while an installer runs (it has been on since 1.1.0).
+- The translator makes fewer moves: MOV between 32-bit registers as one move (was two); a shift of a 32-bit register
+  by a constant whose flags aren't read, as one instruction (was three); an address [base+index] without a
+  displacement without an extra add.
+- REP MOVS and REP STOS are translated: when both sides are plain RAM (the destination without translated code),
+  each within a page, forwards, the copy or fill is one call (memcpy, or element by element where the destination
+  overlaps the source after it, as the CPU does); with paging each side's page comes from the fast path's TLB. Before,
+  every one went to the interpreter. 32-bit DIV and IDIV of a 64-bit EDX:EAX (16.16 fixed-point divides) are
+  translated too (a zero divisor or a quotient that doesn't fit: #DE from the interpreter, as before); they left the
+  block every time. A 3D game's timed demo ~5% faster; Linux's gunzip ~4%.
+- The instructions run in place are counted by opcode only once asked for (the count cost every one a little).
+- Side panels: the power and disk lights keep their colour, dim, when off, as a real LED's lens; the battery icon is
+  grey (red at 15% or less), no longer green.
+- The settings panel's dialog (a Wi-Fi password, a new machine's name) is as tall as what it shows: ISO's buttons
+  ran past its bottom edge, its title and hint past its right edge. Titles "Install DOS / Linux / ISO: machine name".
 
 ## 1.2.1 (2026-10-28)
 
