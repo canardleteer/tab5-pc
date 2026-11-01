@@ -24,6 +24,7 @@ static SemaphoreHandle_t g_i2c_lock;                 // M5Unified's internal I2C
 struct AudioStats { uint32_t blocks, played, underruns, mix_max_us; bool on; };   // mix_max_us: since the last S
 static AudioStats g_astats = {};
 static int16_t* g_abuf[AUDIO_BUFS];
+static volatile bool g_audio_quiet = false;   // the PC paused or off (side_ui.h): no sound, not even held notes
 
 static void audio_task(void*) {
   bool on = false;
@@ -44,7 +45,8 @@ static void audio_task(void*) {
     const int64_t m0 = esp_timer_get_time();
     int16_t* buf = g_abuf[next];
     memset(buf, 0, AUDIO_BLOCK * 4);
-    for (int i = 0; i < AUDIO_BLOCK; i += AUDIO_CHUNK) mixer_callback(g_pc, (uint8_t*)(buf + 2 * i), AUDIO_CHUNK * 4);
+    if (!g_audio_quiet)
+      for (int i = 0; i < AUDIO_BLOCK; i += AUDIO_CHUNK) mixer_callback(g_pc, (uint8_t*)(buf + 2 * i), AUDIO_CHUNK * 4);
     ++g_astats.blocks;
     g_astats.mix_max_us = max(g_astats.mix_max_us, (uint32_t)(esp_timer_get_time() - m0));
     bool loud = false;

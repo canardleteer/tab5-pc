@@ -45,11 +45,11 @@ static String fd_ini_text(const char* t) {
   return s;
 }
 static constexpr uint64_t FD_DISK_SIZE = 512ull << 20;
-static constexpr int FD_CHUNK = 64 << 10;     // the download's buffer (the zip's central directory: its tail)
-// The pieces asked for: small, as what is on its way waits in DMA-capable internal RAM (lwIP's buffers; its TCP window
-// is 64 KB), of which a running PC leaves ~8 KB: with larger pieces it all went, and the AES unit decrypting TLS
-// couldn't have its DMA descriptors (linux_install.h, the same)
-static constexpr int FD_PIECE = 16 << 10;
+static constexpr int FD_CHUNK = 256 << 10;    // the download's buffer: a piece (and the zip's central directory: its tail)
+// The pieces asked for: each costs a round trip to the server, and with 16 KB ones (as when this ran beside the PC,
+// which left lwIP ~8 KB of DMA-capable internal RAM) the download went at ~50 KB/s. Installs run with no PC now
+// (install_mode_run), and what is on its way is bounded by lwIP's TCP window (64 KB).
+static constexpr int FD_PIECE = 256 << 10;
 static constexpr int FD_DISK_HEAD = 320 * 512;   // C.IMG's sectors with data: up to 63 + 1 + 252 (fd_make_disk)
 
 enum FdState { FD_IDLE, FD_RUNNING, FD_FAILED };

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+- **Side panels** beside the PC's picture, as on a PC's case: POWER (held a second: the PC off, its picture gone and
+  its sound stopped; a tap: on again, a cold start), RESET (held a second), PAUSE (the backlight dimmed, the sound
+  stopped) and SETUP (the settings panel) on the left; the power light, the disk light and the battery on the right.
+  A ring fills around POWER's or RESET's icon while held; short taps do nothing while the PC runs. Drawn with LVGL
+  (anti-aliased) as two displays of their own, only where something changed: programs run as fast as without them.
+- The PC's picture is always 4:3 (960 x 720 at most); the settings panel's picture-shape switch is now **Side
+  panels** (off: black margins, part of the touchpad).
+- The PC off is a state of its own: when its system powers it off (APM) the firmware no longer stops for good, and
+  POWER turns it on again. Paused or off, the sound is silent (a held note went on before).
+- Battery: a pack counts as present only after a minute without a low reading (with none fitted, the charger's cycle
+  showed a full pack for a moment now and then).
+- The translator brings dead translations back: each block keeps the x86 bytes it was translated from, and when the
+  same code is at the same place again (a program loaded where it was before, code a program patches and puts back)
+  the old translation is used instead of a new one. A dead block's entry jumps out while the links into it stay, for
+  when it lives again; the links of dead blocks are used again; a large write cleans up its pages once. Installing
+  FreeDOS (its command shell swaps itself out and back for each program the installer runs, ~4500 blocks a second
+  died and were translated again, the code cache emptied every 5 s): the copy 578 -> 495 s.
+- A short conditional jump whose opcode a program rewrites as it runs (a game's ray caster, for every ray) reads it
+  where it runs instead of being translated again; writes to code that invalidate nothing skip the search for blocks.
+  That game: 40-41 -> 42-46 fps.
+- 16-bit addresses that are a constant alone take 1 or 2 instructions instead of 5.
+- With paging, translations ~30% smaller (70 -> 49 bytes an x86 instruction): a read's or write's slow path, pushes
+  and pops through shared routines. A graphical desktop starts 4% faster and its applications 7-12%; a Linux
+  workload 10-16%. The indirect jump cache's slot by a multiplicative hash: Linux's console prints 5-7% faster.
+- Sound Blaster: its DMA reads only what fits in its buffer (it read up to 512 bytes and dropped them while the buffer
+  was full: up to 3% of the time while digitized sound played). vendor/patches/0017.
+- The installers download in 256 KB pieces, not 16 KB (each piece a round trip to the server): FreeDOS 1.4's 17 MB
+  in ~40 s instead of ~5.5 min; a Sprig Linux install, all of it, in under a minute.
+- Serial `text`: the screen's text in a text mode; `stap <x> <y> <ms>`: a press on the side panels (for tests).
 - The translator's code cache takes the PSRAM free when the PC starts, less 1.5 MB kept for Wi-Fi, uploads and
   disks: 3 to 8 MB instead of 3 MB (about 5.5 MB for a PC with 16 MB of RAM), with a block in its tables per 256
   bytes of it. Programs with a lot of code empty it less often: a graphical desktop's applications start 15 to 20%

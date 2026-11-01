@@ -113,6 +113,27 @@ bool t386_vga_picture(VGAState* s, int* w, int* h) {
     return *w > 0 && *h > 0;
 }
 
+// The text on screen, a line at a time to out (serial "text"): in a text mode, its characters as vga_text_refresh
+// finds them (plane 0 of each 4 bytes; line_offset apart); 0 if the screen isn't text
+int t386_vga_text(VGAState* s, void (*out)(const char*)) {
+    if ((s->gr[0x06] & 1) || vbe_enabled(s)) return 0;
+    const int cols = s->cr[0x01] + 1, cheight = (s->cr[9] & 0x1f) + 1;
+    const int rows = ((s->cr[0x12] | ((s->cr[0x07] & 0x02) << 7) | ((s->cr[0x07] & 0x40) << 3)) + 1) / cheight;
+    const uint32_t start = s->cr[0x0d] | (s->cr[0x0c] << 8), line_offset = (uint32_t)s->cr[0x13] << 3;
+    char line[264];
+    for (int y = 0; y < rows && y < 100; y++) {
+        int n = 0;
+        for (int x = 0; x < cols && x < 256; x++) {
+            const uint8_t c = s->vga_ram[(start * 4 + y * line_offset + x * 4) & 0x3ffff];
+            line[n++] = c >= 32 && c < 127 ? c : ' ';
+        }
+        while (n && line[n - 1] == ' ') n--;
+        line[n] = 0;
+        out(line);
+    }
+    return rows;
+}
+
 // The largest VBE mode the BIOS offers: tiny386 answers the Bochs interface's question (GETCAPS) with its frame
 // buffer's size, 720 x 480; t386_vbe_max_w x _h instead, when set (before the BIOS starts: it asks once), as large as
 // the buffer the firmware gives t386_vga_render_native. vbe_read in pc.c (t386_pc.c).

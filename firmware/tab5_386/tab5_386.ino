@@ -4,7 +4,8 @@
 //
 // Core 1 runs the emulated PC flat out (loop()). Core 0 (display_task) polls the keyboard and the serial console,
 // and about 30 times a second has tiny386 draw the VGA screen into a 720 x 480 RGB565 buffer, which the PPA scales
-// by 1.5 and rotates into the panel's portrait frame buffer: 1080 x 720 in the middle of the landscape screen.
+// to 4:3 and rotates into the panel's portrait frame buffer: 960 x 720 at most in the middle of the landscape screen,
+// the side panels (side_ui.h: power, reset, pause and setup buttons, lights) beside it.
 // Every PC video mode DOS uses fits 720 x 480 (text 720 x 400, mode 13h 640 x 400, VGA 640 x 480).
 //
 // Disks are image files on the SD card (FAT32 or exFAT), set in /tiny386.ini (tools/make_sdcard.py writes one); without one,
@@ -15,6 +16,7 @@
 //                  \b Backspace, \t Tab) | key <hid> [<hid>...] (tap keys by USB HID code, hex, held together;
 //                  e0/e1/e2 = Ctrl/Shift/Alt)
 //                  | fps <n> (screen refresh rate, 0 = paused) | mem | vol <0-255> | mouse <gain> | wifi on|off | wifi <ssid> <password> | ip | net | raw 0|1 | steps <n> | vgafast 0|1 | peek <addr> [<len>] | panel
+//                  | text (the screen's text in a text mode) | stap <x> <y> <ms> (a press on the side panels)
 //                  | pd [0|1] (the fast path's pre-decoded blocks; off / on) | reset (the PC's reset button) | poweroff
 #include <M5Unified.h>
 #include <SD_MMC.h>
@@ -57,6 +59,7 @@ void t386_port_report(char* buf, int len);
 void t386_irq_report(char* buf, int len);
 extern int t386_step_max;
 uint32_t t386_vga_frame_hash(VGAState* s);
+int t386_vga_text(VGAState* s, void (*out)(const char*));
 void t386_vga_snapshot(VGAState* s, uint8_t* shadow, size_t shadow_size);
 uint32_t t386_mix(uint32_t h, const void* p, size_t n);
 extern VGAState* t386_vga;   // the fast video memory paths (src/t386_vga_ext.h)
@@ -69,8 +72,8 @@ static constexpr const char* FIRMWARE_VERSION = "1.2.1";
 static constexpr int EMU_W = 720, EMU_H = 480;     // tiny386's frame buffer (VGA output, centred in it)
 static constexpr int SCR_W = 1280, SCR_H = 720;    // landscape
 static constexpr int FB_W = 720, FB_H = 1280;      // the panel's native portrait frame buffer
-static constexpr float SCALE = 1.5f;
-static constexpr int OUT_W = 1080, OUT_H = 720, OUT_X = (SCR_W - OUT_W) / 2;   // where the PC's screen goes
+// where the PC's screen goes: 4:3 across the panel's height, the side panels (side_ui.h) in the margins
+static constexpr int OUT_W = 960, OUT_H = 720, OUT_X = (SCR_W - OUT_W) / 2;
 static int64_t g_frame_us = 33333;                 // screen refresh: ~30 fps (serial: fps <n>, 0 = paused)
 
 static PC* g_pc = nullptr;
@@ -80,6 +83,8 @@ static size_t g_vga_shadow_size = 0;               // (its first 256 KB: the VGA
 static uint16_t* g_panel_fb = nullptr;
 static ppa_client_handle_t g_ppa = nullptr;
 static int g_rot = 1;                              // 1 = landscape, 3 = upside down (docked in the keyboard)
+// The PC off (side_ui.h: its power button, or the OS powered it off): held, its picture gone, until turned on
+static std::atomic<bool> g_pc_off{false};
 
 struct Stats { uint32_t frames, skipped, bands, ppa_errors; uint64_t ppa_us, refresh_us, hash_us; };
 static Stats g_stats = {};
@@ -185,6 +190,7 @@ static const char* pc_state() {
 
 #include "battery.h"
 #include "settings_ui.h"
+#include "side_ui.h"
 
 // ---- display ------------------------------------------------------------------------------------------------
 
@@ -208,10 +214,10 @@ static void show_status(const char* line1, const char* line2) {
   Serial.printf("status: %s | %s\n", line1, line2);
 }
 
-// The PC's picture on the panel: at 4:3, as a monitor showed every mode (text's 720 x 400 dots and 320 x 200
-// graphics stretched to the panel's height like 640 x 480: 960 x 720 at most, in the PPA's steps of 1/16), or with
-// square pixels, 1.5 panel pixels per dot (serial "aspect 43|square", the settings panel: g_aspect43).
-static constexpr int ASPECT_W = 960;   // 4:3 at OUT_H
+// The PC's picture on the panel at 4:3, as a monitor showed every mode (text's 720 x 400 dots and 320 x 200
+// graphics stretched to the panel's height like 640 x 480: 960 x 720 at most, in the PPA's steps of 1/16). (Up to
+// 1.2.1 square pixels too, 1.5 panel pixels per dot, 1080 wide: the margins are the side panels' now.)
+static constexpr int ASPECT_W = OUT_W;   // 4:3 at OUT_H
 static float q16(float s) { return floorf(s * 16) / 16; }
 
 // Rows y .. y + h, columns x .. x + w of src (pic_w x pic_h) onto the panel, scaled by sx, sy and rotated, their
@@ -263,7 +269,7 @@ static bool g_bands_valid = false;   // false: copy every band (at the start, or
 
 static int g_box_w, g_box_h;   // at 4:3: the size of tiny386's picture on the panel (0: none yet)
 
-// At 4:3: tiny386's picture alone (pw x ph, centred in its buffer) scaled to fill the height, in bands of BAND_H of
+// tiny386's picture alone (pw x ph, centred in its buffer) scaled to fill the height at 4:3, in bands of BAND_H of
 // its rows (whole steps of the scale: 16 rows make a whole number of panel rows)
 static void redraw43(int pw, int ph) {
   const int px = (EMU_W - pw) / 2, py = (EMU_H - ph) / 2;
@@ -299,38 +305,16 @@ static void redraw(void*, int, int, int, int) {
   const int64_t t0 = esp_timer_get_time();
   t386_msync(g_emu_fb, (size_t)EMU_W * EMU_H * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
   int pw, ph;
-  if (g_aspect43 && t386_vga_picture(g_pc->vga, &pw, &ph) && pw <= EMU_W && ph <= EMU_H) {
-    redraw43(pw, ph);
-    ++g_stats.frames;
-    g_stats.ppa_us += esp_timer_get_time() - t0;
-    return;
-  }
-  int run = -1;   // first band of the current run of changed bands
-  for (int b = 0; b <= BANDS; ++b) {
-    bool changed = false;
-    if (b < BANDS) {
-      const uint32_t h = t386_mix(0x811C9DC5u, g_emu_fb + b * BAND_H * EMU_W, BAND_H * EMU_W * 2);
-      changed = !g_bands_valid || h != g_band_hash[b];
-      g_band_hash[b] = h;
-    }
-    if (changed && run < 0) run = b;
-    if (!changed && run >= 0) {
-      ppa_block(g_emu_fb, EMU_W, EMU_H, 0, EMU_W, run * BAND_H, (b - run) * BAND_H, SCALE, SCALE, OUT_X,
-                run * BAND_H * 3 / 2);   // (16 rows: 24 panel rows)
-      g_stats.bands += b - run;
-      run = -1;
-    }
-  }
-  g_bands_valid = true;
+  if (!t386_vga_picture(g_pc->vga, &pw, &ph) || pw > EMU_W || ph > EMU_H) pw = EMU_W, ph = EMU_H;   // (all of it)
+  redraw43(pw, ph);
   ++g_stats.frames;
   g_stats.ppa_us += esp_timer_get_time() - t0;
 }
 
 // The 16- and 256-colour graphics modes: t386_vga_render_native draws the lines that changed at the mode's own size
-// into g_native_fb, and the PPA scales just those onto the middle of the PC's part of the panel, by 1.5 per dot
-// across and per scan line down (as tiny386's 720 x 480 picture would be): mode 13h and 0Dh by 3 (960 x 600), 12h by
-// 1.5 (960 x 720). The sound crackled while the PPA wrote the whole picture every frame (~1.2 MB, 28 times a second),
-// and again with runs of lines of any size and place; in groups making 24 panel lines it is clean.
+// into g_native_fb, and the PPA scales just those onto the middle of the PC's part of the panel at 4:3 (mode 13h by 3
+// across, 3.5625 down; 12h by 1.5). The sound crackled while the PPA wrote the whole picture every frame (~1.2 MB, 28
+// times a second), and again with runs of lines of any size and place; in groups of 16 lines it is clean.
 // VBE modes (8 to 32 bits a pixel) too, up to 1024 x 768 when there is the memory for that buffer (else 720 x 480),
 // the BIOS offering no larger (t386_vbe_max_w): scaled down to fit when larger than the PC's part of the panel.
 static constexpr int NATIVE_W = 720, NATIVE_H = 480, NATIVE_VBE_W = 1024, NATIVE_VBE_H = 768;
@@ -343,8 +327,7 @@ static bool g_native_on = true;    // serial native 0|1: tiny386's renderer for 
 // The panel brought up to date with what t386_vga_render_native drew (n: its picture)
 static void show_native(const T386Native& n) {
   const int64_t t0 = esp_timer_get_time();
-  float sx = 1.5f * n.dx, sy = 1.5f * n.ly;
-  if (g_aspect43) sx = q16((float)ASPECT_W / n.w), sy = q16((float)OUT_H / n.h);
+  float sx = q16((float)ASPECT_W / n.w), sy = q16((float)OUT_H / n.h);
   const float fit = fminf((float)OUT_W / (n.w * sx), (float)OUT_H / (n.h * sy));   // (VBE: 1024 x 768 at 1.5)
   if (fit < 1) sx = q16(sx * fit), sy = q16(sy * fit);
   const int sw = (int)(n.w * sx), sh = (int)(n.h * sy);
@@ -371,9 +354,8 @@ static void show_native(const T386Native& n) {
   }
   g_native = n;
   t386_msync(g_native_fb, (size_t)n.w * n.h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-  // runs of whole groups of lines that make 24 panel lines, as tiny386's 16-line bands do (at 4:3: 16 lines, a whole
-  // number of panel lines)
-  const int step = g_aspect43 || 16 % n.ly ? 16 : 16 / n.ly;
+  // runs of whole groups of 16 lines (a whole number of panel lines at 4:3), as tiny386's 16-line bands
+  const int step = 16;
   g_box_w = 0;
   int run = -1, lines = 0;
   for (int y = 0; y < n.h + step; y += step) {   // (one more group, which only ends a run: a last part group too)
@@ -530,6 +512,8 @@ static void handle_serial() {
       print_stats();
     } else if (line == "F" || line == "P") {
       dump_screen(line == "P");
+    } else if (line == "text") {   // the screen's text, if it shows text ("TEXT" lines)
+      if (!t386_vga_text(g_pc->vga, [](const char* l) { Serial.printf("TEXT %s\n", l); })) Serial.println("TEXT (graphics)");
     } else if (line == "PS") {   // a quick checksum of what the panel shows, every 4th word (has the screen settled?)
       const uint32_t* p = (const uint32_t*)((uintptr_t)g_panel_fb + SOC_NON_CACHEABLE_OFFSET);
       uint32_t h = 0x811C9DC5u;
@@ -548,11 +532,6 @@ static void handle_serial() {
       for (int i = 0; i < n; ++i) pc_key(true, lk(codes[i]));
       delay(50);
       for (int i = n - 1; i >= 0; --i) pc_key(false, lk(codes[i]));
-    } else if (line == "aspect 43" || line == "aspect square") {   // the picture's shape (g_aspect43)
-      g_aspect43 = line == "aspect 43";
-      g_prefs.putBool("aspect43", g_aspect43);
-      g_redraw_pc = true;
-      Serial.printf("aspect %s\n", g_aspect43 ? "4:3" : "square pixels");
     } else if (line == "native 0" || line == "native 1") {
       g_native_on = line == "native 1";
       Serial.printf("native renderer %s\n", g_native_on ? "on" : "off");
@@ -669,6 +648,13 @@ static void handle_serial() {
                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
       Serial.printf("%s | PC struct %s | guest RAM %p\n", buf, esp_ptr_external_ram(g_pc) ? "PSRAM" : "internal",
                     g_pc->phys_mem);
+    } else if (line.startsWith("stap ")) {   // stap <x> <y> <ms>: a press beside the PC's picture (side_ui.h), held ms
+      int x = 0, y = 0, ms = 100;
+      sscanf(line.c_str() + 5, "%d %d %d", &x, &y, &ms);
+      g_stap_x = x;
+      g_stap_y = y;
+      side_touch(x, y, 1, esp_timer_get_time() / 1000);
+      g_stap_until = esp_timer_get_time() / 1000 + ms;
     } else if (line.startsWith("ptap ")) {   // ptap <x> <y>: a tap on the settings panel (1280 x 720, landscape)
       int x = 0, y = 0;
       sscanf(line.c_str() + 5, "%d %d", &x, &y);
@@ -766,7 +752,7 @@ static void handle_serial() {
 static void display_task(void*) {
   int64_t last_refresh = 0;
   uint32_t last_hash = 0;
-  bool stopped_shown = false;
+  bool stopped_shown = false, off_shown = false;
   if (g_setup_needed) {   // nothing on the card yet: Wi-Fi on, and the panel's Install DOS / Install Linux
     wifi_enable(true);
     panel_open();
@@ -801,13 +787,46 @@ static void display_task(void*) {
       g_box_w = 0;
       last_refresh = 0;
       stopped_shown = false;
+      off_shown = false;
+      side_invalidate();
     }
     if (g_pc_stopped) {   // (web.h, pc_stop) the PC's screen no longer changes: say why
-      if (!stopped_shown) show_status("The PC is stopped", "Start it from the web page, or restart the Tab5");
+      if (!stopped_shown) {
+        show_status("The PC is stopped", "Start it from the web page, or restart the Tab5");
+        side_invalidate();
+      }
       stopped_shown = true;
+      side_poll(now / 1000);
       vTaskDelay(20);
       continue;
     }
+    if (g_pc_off) {   // (side_ui.h) its picture gone, a word where it was
+      if (!off_shown) {
+        clear_pc_area();
+        auto& d = M5.Display;
+        d.setTextDatum(middle_center);
+        d.setFont(&fonts::Font4);
+        d.setTextColor(0x632C);
+        d.drawString("The PC is off", SCR_W / 2, SCR_H / 2 - 18);
+        d.setFont(&fonts::Font2);
+        d.setTextColor(0x4A49);
+        d.drawString(g_side_on ? "Tap POWER to turn it on" : "Tap to turn it on", SCR_W / 2, SCR_H / 2 + 20);
+        fb_sync();
+        g_box_w = 0;
+        last_hash = 0;
+        g_bands_valid = false;
+        g_native.w = 0;
+        off_shown = true;
+      }
+      side_poll(now / 1000);
+      vTaskDelay(10);
+      continue;
+    }
+    if (off_shown) {   // on again: the picture in full
+      off_shown = false;
+      clear_pc_area();
+    }
+    side_poll(now / 1000);
     if (g_frame_us && now - last_refresh >= g_frame_us) {
       last_refresh = now;
 #if T386_JIT_HOLD == 2
@@ -1038,9 +1057,10 @@ void setup() {
     for (;;) delay(1000);
   }
 
+  g_side_on = g_prefs.getBool("side", true);
   ui_setup();
+  side_setup();
   g_mouse_gain = g_prefs.getFloat("mouse", 1.0f);
-  g_aspect43 = g_prefs.getBool("aspect43", true);
   g_machine = g_prefs.getString("machine", "");   // (linux_install.h)
   show_status("Tab5 PC", "Starting...");
   const bool have_sd = sd_mount();
@@ -1089,11 +1109,11 @@ void setup() {
 
 // Core 1: the PC itself, flat out (this core's idle task isn't watched by the task watchdog).
 void loop() {
-  while (g_pc->shutdown_state != 8) {
+  for (;;) {
     uint32_t c0, n0, c, n;   // the CPU's counters (32 bits wrap in 12 s: added up step by step)
     asm volatile("csrr %0, mcycle" : "=r"(c0));
     asm volatile("csrr %0, minstret" : "=r"(n0));
-    if (g_hold) {   // paused (pc_hold)
+    if (g_hold || g_pc_off) {   // paused (pc_hold), or off
       g_held = true;
       delay(5);
       continue;
@@ -1119,11 +1139,13 @@ void loop() {
       g_pc->reset_request = 1;
     }
     pc_step(g_pc);
+    if (g_pc->shutdown_state == 8 && !g_pc_off) {   // the OS turned it off (APM): off, as by its power button
+      g_pc_off = true;
+      Serial.println("the PC powered off");
+    }
     asm volatile("csrr %0, mcycle" : "=r"(c));
     asm volatile("csrr %0, minstret" : "=r"(n));
     g_hpc_cyc += c - c0;
     g_hpc_ins += n - n0;
   }
-  Serial.println("the PC powered off");
-  for (;;) delay(1000);
 }

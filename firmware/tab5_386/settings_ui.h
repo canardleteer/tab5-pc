@@ -24,7 +24,7 @@ static int g_net_count = 0;
 static lv_display_t* g_disp;
 static lv_obj_t *ui_wifi, *ui_addr, *ui_pcstate, *ui_list, *ui_scan_lbl, *ui_pause_lbl, *ui_reset_lbl;
 static lv_obj_t *ui_modal, *ui_modal_title, *ui_ta_ssid, *ui_ta_pass, *ui_show_btn, *ui_msg, *ui_spinner, *ui_kb;
-static lv_obj_t *ui_connect_btn, *ui_bri, *ui_vol, *ui_mouse, *ui_wifi_sw, *ui_batt, *ui_aspect_sw;
+static lv_obj_t *ui_connect_btn, *ui_bri, *ui_vol, *ui_mouse, *ui_wifi_sw, *ui_batt, *ui_side_sw;
 static lv_obj_t *ui_mach_dd, *ui_mach_start, *ui_inst_msg, *ui_dos_btn, *ui_lnx_btn, *ui_iso_btn;   // the machines
 static int64_t g_start_armed = 0;   // "Start" tapped once at this time (as Reset PC: it restarts the Tab5)
 // The dialog: a Wi-Fi network's name and password, or a new machine's name (Install DOS / Linux / ISO; for an ISO,
@@ -80,7 +80,8 @@ static void ppa_blit(const void* src, int x, int y, int w, int h) {
 }
 
 static void ui_flush(lv_display_t* d, const lv_area_t* a, uint8_t* px) {
-  ppa_blit(px, a->x1, a->y1, lv_area_get_width(a), lv_area_get_height(a));
+  // (LVGL runs while the panel is closed too, for the side panels: side_ui.h; panel_open draws it all anew)
+  if (g_panel_open) ppa_blit(px, a->x1, a->y1, lv_area_get_width(a), lv_area_get_height(a));
   lv_display_flush_ready(d);
 }
 
@@ -90,6 +91,12 @@ static int g_fake_reads = 0;
 
 static void ui_touch(lv_indev_t*, lv_indev_data_t* d) {   // M5.update() has run in touch_poll()
   static int16_t lx = 0, ly = 0;
+  if (!g_panel_open) {   // (the PC's touches: LVGL runs for the side panels as well)
+    d->point.x = lx;
+    d->point.y = ly;
+    d->state = LV_INDEV_STATE_RELEASED;
+    return;
+  }
   if (g_fake_reads > 0) {
     d->point.x = lx = g_fake_x;
     d->point.y = ly = g_fake_y;
@@ -724,7 +731,7 @@ static void kbd_type_in_panel(KbdKey k) {
 // ---- panel --------------------------------------------------------------------------------------------------
 
 static bool g_redraw_pc = false;   // the PC's screen has to be drawn in full again (after the panel)
-static bool g_aspect43 = true;     // the PC's picture at 4:3 (else square pixels: the .ino, ASPECT_W)
+static bool g_side_on = true;      // the buttons and lights beside the PC's picture (side_ui.h; NVS "side")
 
 static void panel_close() {
   if (!g_panel_open) return;
@@ -746,8 +753,8 @@ static void panel_open() {
   lv_slider_set_value(ui_bri, g_brightness, LV_ANIM_OFF);
   lv_slider_set_value(ui_vol, g_volume, LV_ANIM_OFF);
   lv_slider_set_value(ui_mouse, (int)(g_mouse_gain * 10), LV_ANIM_OFF);
-  if (g_aspect43) lv_obj_add_state(ui_aspect_sw, LV_STATE_CHECKED);
-  else lv_obj_remove_state(ui_aspect_sw, LV_STATE_CHECKED);
+  if (g_side_on) lv_obj_add_state(ui_side_sw, LV_STATE_CHECKED);
+  else lv_obj_remove_state(ui_side_sw, LV_STATE_CHECKED);
   g_reset_armed = 0;
   ui_fill_machines();
   ui_refresh_status();
@@ -889,16 +896,16 @@ static void ui_setup() {
     g_mouse_gain = lv_slider_get_value(ui_mouse) / 10.0f;
     g_prefs.putFloat("mouse", g_mouse_gain);
   });
-  lv_obj_t* asp = ui_label(dc, "4:3 picture, as a monitor", &px_font_24, C_INK);
-  lv_obj_set_pos(asp, 0, 138);
-  ui_aspect_sw = lv_switch_create(dc);   // off: square pixels (sharper, but text and 320 x 200 come out wide)
-  ui_switch_style(ui_aspect_sw);
-  lv_obj_set_pos(ui_aspect_sw, LW - 50 - 80, 130);
-  lv_obj_add_event_cb(ui_aspect_sw, [](lv_event_t*) {
-    g_aspect43 = lv_obj_has_state(ui_aspect_sw, LV_STATE_CHECKED);
-    g_prefs.putBool("aspect43", g_aspect43);   // (drawn so when the panel closes: g_redraw_pc)
+  lv_obj_t* side = ui_label(dc, "Side panels", &px_font_24, C_INK);
+  lv_obj_set_pos(side, 0, 138);
+  ui_side_sw = lv_switch_create(dc);   // off: the margins black, touches there the touchpad's
+  ui_switch_style(ui_side_sw);
+  lv_obj_set_pos(ui_side_sw, LW - 50 - 80, 130);
+  lv_obj_add_event_cb(ui_side_sw, [](lv_event_t*) {
+    g_side_on = lv_obj_has_state(ui_side_sw, LV_STATE_CHECKED);
+    g_prefs.putBool("side", g_side_on);   // (drawn so when the panel closes: g_redraw_pc)
   }, LV_EVENT_VALUE_CHANGED, nullptr);
-  ui_switch_label(asp, ui_aspect_sw);
+  ui_switch_label(side, ui_side_sw);
   ui_caption(scr, "Screen, sound, touchpad", LX, DY, LW);
 
   lv_obj_t* done = ui_button(scr, "Done", [](lv_event_t*) { panel_close(); }, true);

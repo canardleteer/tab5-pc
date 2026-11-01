@@ -170,7 +170,7 @@ static bool kbd_leds(int64_t now) {
   const Kbd& k = g_kbd;
   const bool blink = (now / 400) % 2;
   const uint32_t left = k.aa && k.sym ? (blink ? LED_WHITE : LED_AMBER) : k.aa ? LED_WHITE : k.sym ? LED_AMBER : LED_OFF;
-  const uint32_t right = g_pc && g_pc->shutdown_state != 8 ? LED_GREEN : LED_OFF;
+  const uint32_t right = g_pc && !g_pc_off ? LED_GREEN : LED_OFF;
   return kbd_led(0, left) && kbd_led(1, right);
 }
 

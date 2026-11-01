@@ -17,9 +17,11 @@ static constexpr int64_t CLICK_MS = 40;       // how long a tap holds the button
 static constexpr int EDGE_PX = 40, SWIPE_PX = 120;   // the top edge, and how far down a swipe from it goes
 
 static float g_mouse_gain = 1.0f;             // PS/2 counts per screen pixel of finger movement
+static bool side_owns(int x, int y);           // (side_ui.h)
+static void side_touch(int x, int y, int kind, int64_t now);
 
 struct Touchpad {
-  bool down = false, dragging = false;
+  bool down = false, dragging = false, side = false;   // side: a touch the margins' buttons have (side_ui.h)
   int fingers = 0;                            // most fingers seen during this touch
   int x = 0, y = 0, x0 = 0, y0 = 0, travel = 0;
   int64_t t_down = 0, t_last_tap = -10000, release_at = 0;
@@ -55,6 +57,19 @@ static void touch_poll() {
   }
   if (n > 0) {
     const auto& d = M5.Touch.getDetail(0);
+    if (!t.down && side_owns(d.x, d.y)) {   // beside the PC's picture: its buttons
+      t.down = t.side = true;
+      t.x = d.x;
+      t.y = d.y;
+      side_touch(d.x, d.y, 1, now);
+      return;
+    }
+    if (t.side) {
+      t.x = d.x;
+      t.y = d.y;
+      side_touch(d.x, d.y, 2, now);
+      return;
+    }
     if (!t.down) {   // finger down
       t.down = true;
       t.fingers = n;
@@ -95,6 +110,11 @@ static void touch_poll() {
   }
   if (!t.down) return;
   t.down = false;   // finger up
+  if (t.side) {
+    t.side = false;
+    side_touch(t.x, t.y, 0, now);
+    return;
+  }
   const bool tap = now - t.t_down < TAP_MS && t.travel < TAP_MOVE && t.y0 >= EDGE_PX;
   if (t.dragging) {
     t.dragging = false;

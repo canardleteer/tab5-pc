@@ -138,6 +138,12 @@ Scroll Lock opens the settings panel.
 **The touch screen** is a touchpad for the PC's mouse: slide to move, tap to click, tap with two fingers for the
 right button, tap and touch again to drag. DOS programs need a mouse driver (CTMOUSE, which FreeDOS loads).
 
+**The side panels** beside the PC's picture, as on a PC's case: on the left **POWER** (hold it a second: the PC is
+off; tap it: on again, starting afresh; the PC also goes off when its system powers it off, e.g. FreeDOS's
+`FDAPM POWEROFF`), **RESET** (hold it a second), **PAUSE** (the screen dims, the sound stops) and **SETUP** (the
+settings panel); on the right the power light (green on, amber paused), the disk light and the battery. A ring
+fills around POWER's or RESET's icon while you hold it; a short tap on either does nothing while the PC runs.
+
 **Sound**: the PC speaker, the Sound Blaster 16 (`BLASTER=A220 I5 D1 H5 T6`) and AdLib play through the Tab5's
 speaker.
 
@@ -195,8 +201,8 @@ today's web needs HTTPS, which these programs don't do.
 
 **The settings panel** (swipe down from the top edge, Sym + Esc, or Scroll Lock; Done or Esc closes it): pause or
 reset the PC (reset asks for a second tap), Wi-Fi for copying files and the network list, brightness, volume, the
-touchpad's speed, the picture's shape: 4:3 as on a monitor (text and 320 x 200 graphics stretched to the full
-height, the default), or square pixels (sharper, wider), and the machine to start or install
+touchpad's speed, the side panels on or off (off: the margins are black and part of the touchpad; the picture is
+always 4:3, as on a monitor, text and 320 x 200 graphics stretched to the full height), and the machine to start or install
 ([More machines](#more-machines-dos-and-linux-side-by-side)). The top right shows the battery. While the panel is open the PC keeps running.
 
 ![The settings panel](docs/images/panel.png)

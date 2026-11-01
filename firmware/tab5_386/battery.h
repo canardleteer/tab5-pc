@@ -5,15 +5,17 @@
 #include <lvgl.h>
 
 // With no pack fitted the charger cycles its output capacitor between ~4.2 V and ~8.4 V, so a single high reading
-// must not count as a full battery: a pack is "present" only after its voltage has stayed in range for 8 s.
+// must not count as a full battery: a pack is "present" only after its voltage has stayed in range for 8 s, and
+// none out of range for 60 s (the cycle stays high for more than 8 s now and then: the margins' battery light,
+// side_ui.h, showed a full pack for a moment).
 struct BatteryPresence {
   enum State { Unknown, Absent, Present };
   State state = Unknown;
-  int64_t high_since = -1;
+  int64_t high_since = -1, low_at = -1;
   void update(int mv, int64_t now) {
-    if (mv < 5500 || mv > 9000) { state = Absent; high_since = -1; return; }
+    if (mv < 5500 || mv > 9000) { state = Absent; high_since = -1; low_at = now; return; }
     if (high_since < 0) high_since = now;
-    if (now - high_since >= 8000) state = Present;
+    if (now - high_since >= 8000 && (low_at < 0 || now - low_at >= 60000)) state = Present;
   }
 };
 

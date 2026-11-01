@@ -78,10 +78,9 @@ static void machine_choose(const char* file) {   // from the next start (the cal
 // ---- Sprig Linux -----------------------------------------------------------------------------------------------
 
 static constexpr const char* LX_RELEASES = "https://github.com/yejun/sprig-linux/releases";
-// The pieces asked for: small, as what is on its way waits in DMA-capable internal RAM (lwIP's buffers; its TCP window
-// is 64 KB), of which a running PC leaves ~8 KB: with 256 KB pieces it all went, and the AES unit decrypting TLS
-// couldn't have its DMA descriptors ("esp-aes: Failed to allocate memory for the array of DMA descriptors")
-static constexpr int LX_CHUNK = 16 << 10;
+// The pieces asked for (and the buffer they come into): 256 KB, as fd_install.h's FD_PIECE (16 KB ones went at
+// ~50 KB/s, a round trip each; installs run with no PC, which left lwIP's buffers ~8 KB of DMA-capable internal RAM)
+static constexpr int LX_CHUNK = 256 << 10;
 static int g_lx_retries;   // (pieces asked for again, for the log)
 static String g_lx_name;   // the machine being installed: /sdcard/<name>, /sdcard/tiny386-<name>.ini
 static volatile FdState g_lx_state = FD_IDLE;
