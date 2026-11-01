@@ -264,7 +264,7 @@ static void clear_pc_area() {
 // tiny386's redraw callback (it always passes the whole buffer): put the bands of BAND_H rows that changed since
 // the last time onto the panel. A blinking cursor or a typed character costs one band, not the whole screen.
 static constexpr int BAND_H = 16, BANDS = EMU_H / BAND_H;
-static uint32_t g_band_hash[BANDS];
+static uint32_t g_band_hash[BANDS][3];   // its first row, the rows between, its last row
 static bool g_bands_valid = false;   // false: copy every band (at the start, or after the panel was drawn on)
 
 static int g_box_w, g_box_h;   // at 4:3: the size of tiny386's picture on the panel (0: none yet)
@@ -280,16 +280,24 @@ static void redraw43(int pw, int ph) {
     g_box_w = pw, g_box_h = ph;
     g_bands_valid = false;
   }
+  // (a band also goes again when the row next to it in the band above or below changed: the PPA's filter mixes that
+  // into its first or last panel line, as show_native's groups)
   const int nb = (ph + BAND_H - 1) / BAND_H;
+  bool own[BANDS], top[BANDS], bottom[BANDS];
+  for (int b = 0; b < nb; ++b) {
+    const int y = py + b * BAND_H, n = min(BAND_H, py + ph - y);
+    const uint16_t* p = g_emu_fb + y * EMU_W;
+    const uint32_t h[3] = {t386_mix(0x811C9DC5u, p, EMU_W * 2),
+                           n > 2 ? t386_mix(0x811C9DC5u, p + EMU_W, (n - 2) * EMU_W * 2) : 0,
+                           n > 1 ? t386_mix(0x811C9DC5u, p + (n - 1) * EMU_W, EMU_W * 2) : 0};
+    top[b] = !g_bands_valid || h[0] != g_band_hash[b][0];
+    bottom[b] = !g_bands_valid || h[2] != g_band_hash[b][2];
+    own[b] = top[b] || bottom[b] || h[1] != g_band_hash[b][1];
+    memcpy(g_band_hash[b], h, sizeof(h));
+  }
   int run = -1;
   for (int b = 0; b <= nb; ++b) {
-    bool changed = false;
-    if (b < nb) {
-      const int y = py + b * BAND_H, n = min(BAND_H, py + ph - y);
-      const uint32_t h = t386_mix(0x811C9DC5u, g_emu_fb + y * EMU_W, n * EMU_W * 2);
-      changed = !g_bands_valid || h != g_band_hash[b];
-      g_band_hash[b] = h;
-    }
+    const bool changed = b < nb && (own[b] || (b > 0 && bottom[b - 1]) || (b + 1 < nb && top[b + 1]));
     if (changed && run < 0) run = b;
     if (!changed && run >= 0) {
       const int y = run * BAND_H, n = min(b * BAND_H, ph) - y;
@@ -354,13 +362,17 @@ static void show_native(const T386Native& n) {
   }
   g_native = n;
   t386_msync(g_native_fb, (size_t)n.w * n.h * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-  // runs of whole groups of 16 lines (a whole number of panel lines at 4:3), as tiny386's 16-line bands
+  // runs of whole groups of 16 lines (a whole number of panel lines at 4:3), as tiny386's 16-line bands. The PPA's
+  // filter mixes the line above a group into its first panel line and the line below into its last, so a group goes
+  // again when either of those changed too: else a picture drawn from the bottom up (a startup logo) left its first
+  // panel line mixed with the black above, for good.
   const int step = 16;
   g_box_w = 0;
   int run = -1, lines = 0;
   for (int y = 0; y < n.h + step; y += step) {   // (one more group, which only ends a run: a last part group too)
     bool changed = false;
-    for (int i = y; i < y + step && i < n.h; ++i) changed |= g_native_dirty[i] != 0;
+    if (y < n.h)
+      for (int i = max(y - 1, 0); i <= y + step && i < n.h; ++i) changed |= g_native_dirty[i] != 0;
     if (changed && run < 0) run = y;
     if (!changed && run >= 0) {
       const int end = min(y, n.h);
