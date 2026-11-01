@@ -939,7 +939,10 @@ static size_t jit_cache_bytes(bool map_made)
 	const size_t room = T386_JIT_ROOM();
 	const size_t tables = sizeof(JitBlock *) * (JIT_HASH + jit_pages + (jit_pages << (12 - JIT_BUCKET_SHIFT))) +
 			      (map_made ? 0 : 1 << 20) + jit_pages * 8 + sizeof(*jit_smc) * JIT_SMC +
-			      sizeof(*jit_dynimm) * JIT_DYNIMM + 8192;
+			      sizeof(*jit_dynimm) * JIT_DYNIMM + 8192 + sizeof(JitBlock *) * JIT_GRAVE + JIT_SRC_BYTES;
+	// (all of the tables jit_init makes: the room left after the cache is what Wi-Fi's buffers, uploads and the disks
+	// need, and when PSRAM runs out they take internal RAM, which the card's DMA needs. Leaving out jit_src and
+	// jit_grave, the room was 0.5 MB less: the web page's card reads failed for want of a DMA buffer.)
 	const size_t per = JIT_CACHE_PER_BLOCK + sizeof(JitBlock) + 2 * sizeof(JitLink);
 	size_t n = room > tables ? (room - tables) / per * JIT_CACHE_PER_BLOCK & ~(size_t) 0xffff : 0;
 	if (n < T386_JIT_CACHE_SIZE) n = T386_JIT_CACHE_SIZE;

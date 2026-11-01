@@ -31,6 +31,11 @@
 - The installers download in 256 KB pieces, not 16 KB (each piece a round trip to the server): FreeDOS 1.4's 17 MB
   in ~40 s instead of ~5.5 min; a Sprig Linux install, all of it, in under a minute.
 - Serial `text`: the screen's text in a text mode; `stap <x> <y> <ms>`: a press on the side panels (for tests).
+- The card's file system sectors go through a buffer of the firmware's own in PSRAM: left to the card's driver, each
+  took a little DMA-capable internal RAM, of which Wi-Fi leaves only ~3 KB, and with traffic on the web page that
+  ran out (a file not created, a folder listed empty, as if the card had gone). An upload refused unread (over
+  256 KB) closes its connection (its data held Wi-Fi's receive buffers). The code cache leaves the PSRAM meant for
+  Wi-Fi, uploads and the disks again (the revival tables were left out of its sizing).
 - The translator's code cache takes the PSRAM free when the PC starts, less 1.5 MB kept for Wi-Fi, uploads and
   disks: 3 to 8 MB instead of 3 MB (about 5.5 MB for a PC with 16 MB of RAM), with a block in its tables per 256
   bytes of it. Programs with a lot of code empty it less often: a graphical desktop's applications start 15 to 20%

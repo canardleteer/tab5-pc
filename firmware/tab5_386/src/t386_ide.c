@@ -53,20 +53,47 @@ static uint32_t t386_ra_sector, t386_ra_count, t386_ra_next;   // (t386_ra_next:
 // t386_card_rw does.
 static SemaphoreHandle_t t386_card_lock;
 static sdmmc_card_t* t386_ff_card;
+// FatFs's own sectors (its window, a file's buffer: in structures, not on cache lines) go through this, whole cache
+// lines in PSRAM, which the card's DMA takes. Left to the card's driver, each took a sector of DMA-capable internal
+// RAM for the moment, of which Wi-Fi leaves ~3 KB: with traffic on the web page that ran out, and the card's reads
+// failed ("not enough mem": a file not created, a folder listed empty, the card as if gone).
+#define T386_FF_BOUNCE_SECTORS 16
+static uint8_t* t386_ff_bounce;
 
 static DSTATUS t386_ff_init(BYTE pdrv) { return 0; }
 static DSTATUS t386_ff_status(BYTE pdrv) { return 0; }
 
 static DRESULT t386_ff_read(BYTE pdrv, BYTE* buff, uint32_t sector, unsigned count) {
     xSemaphoreTake(t386_card_lock, portMAX_DELAY);
-    const esp_err_t e = sdmmc_read_sectors(t386_ff_card, buff, sector, count);
+    esp_err_t e = ESP_OK;
+    if (!((uintptr_t)buff & 127) || !t386_ff_bounce) {
+        e = sdmmc_read_sectors(t386_ff_card, buff, sector, count);
+    } else {
+        for (unsigned done = 0; done < count && e == ESP_OK;) {
+            const unsigned n = count - done < T386_FF_BOUNCE_SECTORS ? count - done : T386_FF_BOUNCE_SECTORS;
+            e = sdmmc_read_sectors(t386_ff_card, t386_ff_bounce, sector + done, n);
+            if (e == ESP_OK) memcpy(buff + done * 512, t386_ff_bounce, n * 512);
+            done += n;
+        }
+    }
     xSemaphoreGive(t386_card_lock);
     return e == ESP_OK ? RES_OK : RES_ERROR;
 }
 
 static DRESULT t386_ff_write(BYTE pdrv, const BYTE* buff, uint32_t sector, unsigned count) {
     xSemaphoreTake(t386_card_lock, portMAX_DELAY);
-    const esp_err_t e = sdmmc_write_sectors(t386_ff_card, buff, sector, count);
+    esp_err_t e = ESP_OK;
+    if (!((uintptr_t)buff & 127) || !t386_ff_bounce) {
+        e = sdmmc_write_sectors(t386_ff_card, buff, sector, count);
+    } else {
+        for (unsigned done = 0; done < count && e == ESP_OK;) {
+            const unsigned n = count - done < T386_FF_BOUNCE_SECTORS ? count - done : T386_FF_BOUNCE_SECTORS;
+            memcpy(t386_ff_bounce, buff + done * 512, n * 512);
+            esp_cache_msync(t386_ff_bounce, n * 512, ESP_CACHE_MSYNC_FLAG_DIR_C2M);   // (the card's DMA reads PSRAM)
+            e = sdmmc_write_sectors(t386_ff_card, t386_ff_bounce, sector + done, n);
+            done += n;
+        }
+    }
     xSemaphoreGive(t386_card_lock);
     return e == ESP_OK ? RES_OK : RES_ERROR;
 }
@@ -89,6 +116,7 @@ void t386_card_lock_setup(void* card) {
     if (t386_card_lock) return;
     t386_card_lock = xSemaphoreCreateMutex();
     t386_ff_card = card;
+    t386_ff_bounce = heap_caps_aligned_alloc(128, T386_FF_BOUNCE_SECTORS * 512, MALLOC_CAP_SPIRAM);
     ff_diskio_register(ff_diskio_get_pdrv_card(card), &impl);
 }
 

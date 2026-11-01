@@ -289,8 +289,10 @@ static char* g_upload_buf = nullptr;
 static esp_err_t h_put(httpd_req_t* req) {
   const String off_s = query(req, "offset");
   const long offset = off_s.toInt();
-  if ((int)req->content_len > UPLOAD_CHUNK)
-    return send_error(req, "413 Payload Too Large", "send files in chunks of up to 256 KB (&offset=)");
+  if ((int)req->content_len > UPLOAD_CHUNK) {   // (and the connection closed: its body, unread, held Wi-Fi's
+    send_error(req, "413 Payload Too Large", "send files in chunks of up to 256 KB (&offset=)");   // receive
+    return ESP_FAIL;                                                                                // buffers)
+  }
   int got = 0;   // receive the whole chunk before touching the card
   while (got < (int)req->content_len) {
     const int n = httpd_req_recv(req, g_upload_buf + got, req->content_len - got);
