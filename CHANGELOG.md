@@ -36,6 +36,9 @@
   ran out (a file not created, a folder listed empty, as if the card had gone). An upload refused unread (over
   256 KB) closes its connection (its data held Wi-Fi's receive buffers). The code cache leaves the PSRAM meant for
   Wi-Fi, uploads and the disks again (the revival tables were left out of its sizing).
+- The speaker starts once, when the Tab5 starts, and stays; silence switches only its amplifier off. Started with
+  each sound, it took a little DMA-capable internal RAM each time, which Wi-Fi can leave too little of: the sound
+  failed to start and came out as noise (a graphical desktop's start and exit sounds, with Wi-Fi on).
 - The translator's code cache takes the PSRAM free when the PC starts, less 1.5 MB kept for Wi-Fi, uploads and
   disks: 3 to 8 MB instead of 3 MB (about 5.5 MB for a PC with 16 MB of RAM), with a block in its tables per 256
   bytes of it. Programs with a lot of code empty it less often: a graphical desktop's applications start 15 to 20%

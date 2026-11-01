@@ -4,7 +4,11 @@
 // A task on core 0 pulls the mix a block at a time. The mixer has to run at the sound's real pace even when nothing
 // is heard: it is what drains the Sound Blaster's buffer, and programs wait for the interrupt that follows. So while
 // the speaker plays, the speaker's queue sets the pace; while it is off, a timer does.
-// The speaker (amplifier) is switched on when a block isn't silent and off again AUDIO_OFF_MS after the last sound.
+// The speaker (amplifier) is switched on when a block isn't silent and off again AUDIO_OFF_MS after the last sound:
+// the amplifier alone (audio_amp). The I2S channel and the codec start once, at boot (audio_setup), before Wi-Fi:
+// started with each sound, they took their DMA descriptors from DMA-capable internal RAM each time, of which Wi-Fi
+// leaves a few hundred bytes now and then, and then failed ("i2s_alloc_dma_desc ... failed", "speaker: begin failed"
+// every block): noise, at what sounded like the wrong pitch, instead of the sound.
 // Only this task touches M5.Speaker after setup. Its begin/end/setVolume talk to the codec on M5Unified's internal
 // I2C bus, which the touch screen (touch.h) shares: both hold g_i2c_lock. (The keyboard is on the other bus.)
 #pragma once
@@ -24,6 +28,14 @@ static SemaphoreHandle_t g_i2c_lock;                 // M5Unified's internal I2C
 struct AudioStats { uint32_t blocks, played, underruns, mix_max_us; bool on; };   // mix_max_us: since the last S
 static AudioStats g_astats = {};
 static int16_t* g_abuf[AUDIO_BUFS];
+static bool g_spk_started = false;   // M5.Speaker began at boot (its I2S channel kept)
+
+// The Tab5's amplifier (bit 1 of the PI4IOE5V6408 at 0x43, register 5, as M5Unified's Tab5 speaker callback); under
+// g_i2c_lock
+static void audio_amp(bool on) {
+  if (on) M5.In_I2C.bitOn(0x43, 0x05, 0b00000010, 400000);
+  else M5.In_I2C.bitOff(0x43, 0x05, 0b00000010, 400000);
+}
 static volatile bool g_audio_quiet = false;   // the PC paused or off (side_ui.h): no sound, not even held notes
 
 static void audio_task(void*) {
@@ -55,13 +67,15 @@ static void audio_task(void*) {
     if (loud) last_sound = now;
     xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
     if (loud && !on && g_volume) {
-      on = M5.Speaker.begin();
+      if (!g_spk_started) g_spk_started = M5.Speaker.begin();   // (at boot it failed: now)
+      on = g_spk_started;
       vol = 0;
-      if (!on) Serial.println("speaker: begin failed");
+      if (on) audio_amp(true);
+      else Serial.println("speaker: begin failed");
     }
     if (on && vol != g_volume) M5.Speaker.setVolume(vol = g_volume);
     if (on && (now - last_sound > AUDIO_OFF_MS || !g_volume)) {
-      M5.Speaker.end();
+      audio_amp(false);   // (the channel goes on, with nothing to play: silence)
       on = false;
       due = esp_timer_get_time();
     }
@@ -92,6 +106,9 @@ static void audio_setup() {
   sc.task_priority = 5;
   M5.Speaker.config(sc);
   for (auto& b : g_abuf) b = (int16_t*)heap_caps_calloc(AUDIO_BLOCK * 2, sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  g_spk_started = M5.Speaker.begin();   // (its DMA descriptors now, before Wi-Fi takes that RAM)
+  if (g_spk_started) audio_amp(false);
+  else Serial.println("speaker: begin failed");
 }
 
 static void audio_start() {   // once the PC exists
