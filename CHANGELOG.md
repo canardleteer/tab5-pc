@@ -5,6 +5,9 @@
 - A real-mode interrupt (hardware ones too) changes SP only, as on x86: it set ESP to (ESP - 6) & 0xffff, clearing
   ESP's upper half, which a DOS extender's real-mode calls can keep a value in (vendor/patches/0019; sent to
   tiny386 upstream with the AAM, 9th-column and Sound Blaster DMA fixes).
+- The DMA controller's decrement mode transfers downwards from the current address, as the 8237: reads overwrote
+  half their bytes instead of reversing them, and with the Sound Blaster's shorter reads (1.3.0) a sound played that
+  way would have come out wrong; writes scrambled the buffer they came from (vendor/patches/0020, also upstream).
 
 ## 1.3.0 (2026-11-01)
 
