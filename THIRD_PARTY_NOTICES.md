@@ -54,10 +54,10 @@ pinned in `vendor/bios.lock`: SeaBIOS rel-1.17.0-20-g81ec9ec0 (coreboot/seabios 
 - the M5Stack board package `m5stack:esp32` 3.3.9: the Arduino core for ESP32 (arduino-esp32, LGPL-2.1 as a whole,
   with files under other licenses) and ESP-IDF v5.5.4's precompiled libraries (Apache-2.0, with components under
   their own licenses: FreeRTOS, lwIP, mbedTLS, newlib, TinyUSB, ESP-Hosted, ...);
-- [M5Unified](https://github.com/m5stack/M5Unified) 0.2.25 (MIT, (c) 2021 M5Stack);
-- [M5GFX](https://github.com/m5stack/M5GFX) 0.2.33 (MIT, (c) 2021 M5Stack), which includes LovyanGFX (FreeBSD
+- [M5Unified](https://github.com/m5stack/M5Unified) 0.2.26 (MIT, (c) 2021 M5Stack);
+- [M5GFX](https://github.com/m5stack/M5GFX) 0.2.36 (MIT, (c) 2021 M5Stack), which includes LovyanGFX (FreeBSD
   license) and other parts listed in its README; of its fonts the firmware uses the default one (Adafruit GFX's,
-  BSD) and Font4 (Bodmer's TFT_eSPI, FreeBSD license);
+  BSD) and Font2 and Font4 (Bodmer's TFT_eSPI, FreeBSD license);
 - [LVGL](https://github.com/lvgl/lvgl) 9.6.0 (MIT, (c) 2025 LVGL Kft), with its built-in Montserrat fonts (SIL Open
   Font License 1.1), symbol font (from Font Awesome Free) and UNSCII 8 (by Viznut, public domain), from which
   `tools/fonts/px_fonts.py` makes the settings panel's pixel fonts (`src/px_fonts.c`).

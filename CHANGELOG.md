@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 (2026-11-01)
+
+Side panels beside the PC's picture (buttons and lights, as on a PC's case), ISO installs, a faster translator with a
+larger code cache, and fixes (FreeDOS EDIT under JemmEx, the card under Wi-Fi traffic, the speaker, thin lines across
+pictures). The firmware image with its notices and corresponding source, as for 1.2.1.
 
 - **Side panels** beside the PC's picture, as on a PC's case: POWER (held a second: the PC off, its picture gone and
   its sound stopped; a tap: on again, a cold start), RESET (held a second), PAUSE (the backlight dimmed, the sound

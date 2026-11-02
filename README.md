@@ -19,7 +19,7 @@ To build the firmware:
 
 - [Arduino CLI](https://arduino.github.io/arduino-cli/) with the M5Stack board package (`m5stack:esp32`, from
   `https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json`) and the libraries M5Unified, M5GFX
-  and lvgl. Built and tested with m5stack:esp32 3.3.9, M5Unified 0.2.25, M5GFX 0.2.33 and lvgl 9.6.0.
+  and lvgl. Built and tested with m5stack:esp32 3.3.9, M5Unified 0.2.26, M5GFX 0.2.36 and lvgl 9.6.0.
 - git, curl, make, tar with xz, a C compiler, `xxd`, and the GitHub CLI (`gh`, logged in: `gh auth login`) for
   tiny386's BIOS images.
 - Python 3: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`. Run the tools with
@@ -33,7 +33,7 @@ Each [release](https://github.com/yejun/tab5-pc/releases) has the firmware as on
 (`tab5-pc-<version>-prev3.bin`, for the Tab5's ESP32-P4, revision v1.x), with its licenses and notices and the
 corresponding source. Releases have no image for ESP32-P4 v3.x while no Tab5 with that chip is out (see below to build
 one). It is also in M5Burner. To write it yourself:
-`esptool --chip esp32p4 write-flash 0x0 tab5-pc-1.2.1-prev3.bin`.
+`esptool --chip esp32p4 write-flash 0x0 tab5-pc-1.3.0-prev3.bin`.
 
 ## Build and flash
 
