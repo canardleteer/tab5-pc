@@ -70,6 +70,10 @@
   grey (red at 15% or less), no longer green.
 - The settings panel's dialog (a Wi-Fi password, a new machine's name) is as tall as what it shows: ISO's buttons
   ran past its bottom edge, its title and hint past its right edge. Titles "Install DOS / Linux / ISO: machine name".
+- Fix: a translated far JMP or CALL in virtual-8086 mode with paging (DOS under a memory manager such as JemmEx or
+  EMM386), to code in another page, went on with the old code segment's base and ran whatever was translated at
+  that offset in the calling segment. FreeDOS's EDIT under JemmEx (the FreeDOS installer's default) stopped with
+  "exception 06" almost every time it started after the first; now 8 starts of 8 run. (Since 1.0.0.)
 
 ## 1.2.1 (2026-10-28)
 

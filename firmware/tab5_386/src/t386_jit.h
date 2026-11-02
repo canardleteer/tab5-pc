@@ -1633,17 +1633,26 @@ static void jt_exit(int reason, uword eip)
 static void jt_ijc_exit(int csreg);
 
 // an exit to another block at eip, linkable: two instructions, jumping to a stub until linked. With paging, one in
-// another page goes through the indirect jump cache (links stay within a page).
-static void jt_link_exit(uword eip)   // (the slot: lui ra / jalr ra to t386_jit_link_exit, the x86 address)
+// another page goes through the indirect jump cache (links stay within a page). cs_base: CS's base there (a far JMP
+// or CALL's new one: with the block's, a far call under a memory manager's paging looked up the target's offset in
+// the old code segment, and ran whatever block was there)
+static void jt_link_exit_cs(uword eip, uword cs_base)   // (the slot: lui ra / jalr ra to t386_jit_link_exit, the x86 address)
 {
-	if ((jt_mode & JM_PAGED) && (jt_cs_base + eip) >> 12 != jt_lin >> 12) {
+	if ((jt_mode & JM_PAGED) && (cs_base + eip) >> 12 != jt_lin >> 12) {
 		e_li(A1, eip);
-		jt_ijc_exit(-1);
+		if (cs_base == jt_cs_base) {
+			jt_ijc_exit(-1);
+		} else {
+			e_li(A2, cs_base);
+			jt_ijc_exit(A2);
+		}
 		return;
 	}
 	e_call_abs((const void *) t386_jit_link_exit);
 	E(eip);
 }
+
+static void jt_link_exit(uword eip) { jt_link_exit_cs(eip, jt_cs_base); }
 
 // ---- registers
 static inline int jt_sext(int d, int s, int bits)
@@ -5260,7 +5269,7 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		jt_flags_store();
 		e_li(A0, in->imm2 & 0xffff);
 		jt_seg_load(SEG_CS, A0);
-		jt_link_exit(in->imm);
+		jt_link_exit_cs(in->imm, (in->imm2 & 0xffff) << 4);   // (real and virtual-8086 mode: CS is a selector times 16)
 		break;
 	case K_RETF: {
 		int n = bits / 8;
