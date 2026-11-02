@@ -1,0 +1,15 @@
+A real-mode interrupt changes SP only, as on x86: call_isr set ESP to (ESP - 6) & 0xffff with a 16-bit stack,
+clearing ESP's upper half (code that keeps a 32-bit value in ESP across a real-mode interrupt, as a DOS extender's
+real-mode calls do, saw it cleared). The firmware's fast path did it right. Sent upstream as hchunhui/tiny386#59.
+
+--- a/i386.c
++++ b/i386.c
+@@ -4704,7 +4704,7 @@
+ 		saddr16(&meml1, cpu->flags);
+ 		saddr16(&meml2, cpu->seg[SEG_CS].sel);
+ 		saddr16(&meml3, cpu->ip);
+-		sreg32(4, (sp - 2 * 3) & sp_mask);
++		set_sp(sp - 2 * 3, sp_mask);
+ 
+ 		TRY1(set_seg(cpu, SEG_CS, newcs));
+ 		cpu->next_ip = newip;

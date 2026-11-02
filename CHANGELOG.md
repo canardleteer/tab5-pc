@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- A real-mode interrupt (hardware ones too) changes SP only, as on x86: it set ESP to (ESP - 6) & 0xffff, clearing
+  ESP's upper half, which a DOS extender's real-mode calls can keep a value in (vendor/patches/0019; sent to
+  tiny386 upstream with the AAM, 9th-column and Sound Blaster DMA fixes).
+
 ## 1.3.0 (2026-11-01)
 
 Side panels beside the PC's picture (buttons and lights, as on a PC's case), ISO installs, a faster translator with a
