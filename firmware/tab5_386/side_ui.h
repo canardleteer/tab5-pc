@@ -305,8 +305,29 @@ static int side_show(const SideState& s) {
   return changed;
 }
 
-// From the display task, every round: the actions of held buttons, the backlight while paused, the sound, and the
-// side panels brought up to date and drawn where they changed (while the settings panel is open: after it)
+// A press on a side button forgotten: the settings panel opened while it was held (by a key), and the finger's
+// release goes to the panel. (Kept, its hold fired after the panel closed: the PC off or reset.)
+static void side_cancel() {
+  g_side_pressed = -1;
+  g_side_fired = false;
+  g_tp.side = false;
+}
+
+// From the display task, every round, the settings panel open or not: the sound (silent while the PC is off or
+// paused) and the backlight (dimmed while paused, but not under the settings panel)
+static void side_state_poll() {
+  const bool on = !g_pc_off && !g_pc_stopped;
+  g_audio_quiet = !on || g_user_pause || g_disk.drive >= 0;
+  const uint8_t bri = g_user_pause && on && !g_panel_open ? max(8, g_brightness / 4) : g_brightness;
+  if (bri != g_side_bri || g_brightness != g_side_bri_seen) {
+    g_side_bri = bri;
+    g_side_bri_seen = g_brightness;
+    M5.Display.setBrightness(bri);
+  }
+}
+
+// From the display task, every round while the settings panel is closed: the actions of held buttons,
+// side_state_poll, and the side panels brought up to date and drawn where they changed
 static void side_poll(int64_t now) {
   if (g_stap_until && now >= g_stap_until) {
     g_stap_until = 0;
@@ -323,13 +344,7 @@ static void side_poll(int64_t now) {
       Serial.println("the PC reset (reset button)");
     }
   }
-  g_audio_quiet = !on || g_user_pause || g_disk.drive >= 0;
-  const uint8_t bri = g_user_pause && on && !g_panel_open ? max(8, g_brightness / 4) : g_brightness;
-  if (bri != g_side_bri || g_brightness != g_side_bri_seen) {
-    g_side_bri = bri;
-    g_side_bri_seen = g_brightness;
-    M5.Display.setBrightness(bri);
-  }
+  side_state_poll();
   if (!g_side_made || g_panel_open) return;
   const int redraw = side_show(side_wanted(now)) | g_side_redraw;
   g_side_redraw = 0;

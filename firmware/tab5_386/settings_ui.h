@@ -48,6 +48,7 @@ static void ui_wifi_request_do();
 static String g_pending_ssid;
 
 static void panel_close();
+static void side_cancel();   // (side_ui.h)
 
 // ---- LVGL plumbing ------------------------------------------------------------------------------------------
 
@@ -750,6 +751,7 @@ static void panel_open() {
   if (g_panel_open) return;
   g_panel_open = true;
   g_touch_block = M5.Touch.getCount() > 0;
+  side_cancel();       // a side button held (the panel opened by a key): its release is the panel's now
   kbd_release_all();   // keys held for the PC
   usb_kbd_release_all();
   lv_slider_set_value(ui_bri, g_brightness, LV_ANIM_OFF);

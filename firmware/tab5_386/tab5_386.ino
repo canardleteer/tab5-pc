@@ -460,7 +460,7 @@ static void print_stats() {
   }
   Serial.printf("tab5-pc %s | %.2f M instr/s | %.1f fps drawn, %.1f unchanged (check %.1f ms), redraw %.1f ms "
                 "(compare + PPA %.1f ms, %.1f of %d bands%s) | "
-                "sound %s, %u blocks, %u underruns, mix <= %.1f ms | keyboard %s, %u keys | taps %u + %u right | psram free %u | "
+                "sound %s%s, %u blocks, %u underruns, mix <= %.1f ms | backlight %u | keyboard %s, %u keys | taps %u + %u right | psram free %u | "
                 "internal free %u (lowest %u, largest block %u)\n",
                 FIRMWARE_VERSION, dcyc / dt / 1e6, frames / dt, skipped / dt,
                 frames + skipped ? (g_stats.hash_us - st_last.hash_us) / 1000.0 / (frames + skipped) : 0.0,
@@ -468,7 +468,7 @@ static void print_stats() {
                 frames ? (g_stats.ppa_us - st_last.ppa_us) / 1000.0 / frames : 0.0,
                 frames ? (double)(g_stats.bands - st_last.bands) / frames : 0.0, BANDS,
                 g_stats.ppa_errors ? ", PPA errors!" : "",
-                g_astats.on ? "on" : "off", g_astats.blocks, g_astats.underruns, g_astats.mix_max_us / 1000.0,
+                g_astats.on ? "on" : "off", g_audio_quiet ? " (silenced)" : "", g_astats.blocks, g_astats.underruns, g_astats.mix_max_us / 1000.0, (unsigned)g_side_bri,
                 g_kbd.present ? "yes" : "no", g_kbd.keys,
                 g_tp.taps, g_tp.right_taps,
                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -783,6 +783,7 @@ static void display_task(void*) {
     type_poll();
     const int64_t now = esp_timer_get_time();
     if (g_panel_open) {   // the settings panel instead of the PC's screen
+      side_state_poll();   // (pause or resume in the panel: the sound and backlight follow at once)
       ui_poll();
       vTaskDelay(1);
       continue;

@@ -78,6 +78,11 @@
   4/3): shaded backgrounds (FreeDOS EDIT's desktop) showed vertical stripes. `vga_force_8dm = 0` in a machine's ini
   brings 9-dot cells back. With 9-dot cells, only the box-drawing characters C0h-DFh repeat their 8th column in the
   9th, as on the VGA; the shades B0h-B2h no longer get a doubled dot in every cell (vendor/patches/0018).
+- Side panels: POWER or RESET held, the settings panel opened by a key before the second was up and the finger lifted
+  while it was open: the hold fired once the panel closed (the PC off or reset). Opening the panel now forgets the
+  press. Pause and Resume in the settings panel silence and restore the sound at once (Resume used to leave the PC
+  silent until the panel closed, Pause to leave held notes playing), and the panel has its full brightness when
+  opened while the PC is paused. Serial `S` shows "(silenced)" and the backlight.
 
 ## 1.2.1 (2026-10-28)
 
