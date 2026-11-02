@@ -25,7 +25,7 @@ static constexpr int AUDIO_QUIET = 64;               // |sample| at or below thi
 static uint8_t g_volume = 160;                       // speaker volume 0-255 (Sym + Alt + Up/Down, serial vol <n>)
 static Preferences g_prefs;                          // remembered: the volume
 static SemaphoreHandle_t g_i2c_lock;                 // M5Unified's internal I2C bus: speaker codec, touch
-struct AudioStats { uint32_t blocks, played, underruns, mix_max_us; bool on; };   // mix_max_us: since the last S
+struct AudioStats { uint32_t blocks, played, underruns, mix_max_us, peak; bool on; };   // mix_max_us, peak: since the last S
 static AudioStats g_astats = {};
 static int16_t* g_abuf[AUDIO_BUFS];
 static bool g_spk_started = false;   // M5.Speaker began at boot (its I2S channel kept)
@@ -62,7 +62,10 @@ static void audio_task(void*) {
     ++g_astats.blocks;
     g_astats.mix_max_us = max(g_astats.mix_max_us, (uint32_t)(esp_timer_get_time() - m0));
     bool loud = false;
-    for (int i = 0; i < AUDIO_BLOCK * 2 && !loud; ++i) loud = buf[i] > AUDIO_QUIET || buf[i] < -AUDIO_QUIET;
+    uint32_t peak = 0;   // (the loudest sample: serial S)
+    for (int i = 0; i < AUDIO_BLOCK * 2; ++i) peak = max(peak, (uint32_t)abs(buf[i]));
+    loud = peak > AUDIO_QUIET;
+    g_astats.peak = max(g_astats.peak, peak);
     const int64_t now = esp_timer_get_time() / 1000;
     if (loud) last_sound = now;
     xSemaphoreTake(g_i2c_lock, portMAX_DELAY);

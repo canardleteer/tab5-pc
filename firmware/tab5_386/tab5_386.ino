@@ -460,7 +460,7 @@ static void print_stats() {
   }
   Serial.printf("tab5-pc %s | %.2f M instr/s | %.1f fps drawn, %.1f unchanged (check %.1f ms), redraw %.1f ms "
                 "(compare + PPA %.1f ms, %.1f of %d bands%s) | "
-                "sound %s%s, %u blocks, %u underruns, mix <= %.1f ms | backlight %u | keyboard %s, %u keys | taps %u + %u right | psram free %u | "
+                "sound %s%s, peak %u, %u blocks, %u underruns, mix <= %.1f ms | backlight %u | keyboard %s, %u keys | taps %u + %u right | psram free %u | "
                 "internal free %u (lowest %u, largest block %u)\n",
                 FIRMWARE_VERSION, dcyc / dt / 1e6, frames / dt, skipped / dt,
                 frames + skipped ? (g_stats.hash_us - st_last.hash_us) / 1000.0 / (frames + skipped) : 0.0,
@@ -468,7 +468,7 @@ static void print_stats() {
                 frames ? (g_stats.ppa_us - st_last.ppa_us) / 1000.0 / frames : 0.0,
                 frames ? (double)(g_stats.bands - st_last.bands) / frames : 0.0, BANDS,
                 g_stats.ppa_errors ? ", PPA errors!" : "",
-                g_astats.on ? "on" : "off", g_audio_quiet ? " (silenced)" : "", g_astats.blocks, g_astats.underruns, g_astats.mix_max_us / 1000.0, (unsigned)g_side_bri,
+                g_astats.on ? "on" : "off", g_audio_quiet ? " (silenced)" : "", (unsigned)g_astats.peak, g_astats.blocks, g_astats.underruns, g_astats.mix_max_us / 1000.0, (unsigned)g_side_bri,
                 g_kbd.present ? "yes" : "no", g_kbd.keys,
                 g_tp.taps, g_tp.right_taps,
                 heap_caps_get_free_size(MALLOC_CAP_SPIRAM), heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -477,6 +477,7 @@ static void print_stats() {
   cyc_last = cyc;
   st_last = g_stats;
   g_astats.mix_max_us = 0;
+  g_astats.peak = 0;
   char batt[128];
   battery_text(batt, sizeof(batt));
   Serial.printf("battery | %s (%d mV) | usb: %u keyboards, %u reports; %u mice, %u reports\n", batt, g_batt.mv,
@@ -703,6 +704,18 @@ static void handle_serial() {
     } else if (line.startsWith("raw ")) {   // raw 0|1: disk images as raw card sectors (from the next start)
       g_prefs.putBool("raw", line.substring(4).toInt() != 0);
       Serial.println("raw access: from the next start");
+    } else if (line == "beep") {   // a speaker check without the PC: the amplifier on, an 880 Hz tone on another channel
+      xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
+      Serial.printf("speaker started %d, volume %u (M5 %u)\n", g_spk_started, g_volume, M5.Speaker.getVolume());
+      if (!g_spk_started) g_spk_started = M5.Speaker.begin();
+      M5.Speaker.setVolume(g_volume);   // (the volume the PC's sound has: the audio task sets it only when it changes)
+      audio_amp(true);
+      uint8_t r5 = 0, r3 = 0;
+      M5.In_I2C.readRegister(0x43, 0x05, &r5, 1, 400000);
+      M5.In_I2C.readRegister(0x43, 0x03, &r3, 1, 400000);
+      M5.Speaker.tone(880, 1500, 3);
+      xSemaphoreGive(g_i2c_lock);
+      Serial.printf("expander 0x43: out (reg 5) %02x, direction (reg 3) %02x; tone 880 Hz 1.5 s\n", r5, r3);
     } else if (line == "panel") {
       panel_toggle();
     } else if (line.startsWith("dns ")) {   // dns <host>: look a name up (Wi-Fi up), and how long it took

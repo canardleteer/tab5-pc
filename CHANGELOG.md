@@ -8,6 +8,10 @@
 - The DMA controller's decrement mode transfers downwards from the current address, as the 8237: reads overwrote
   half their bytes instead of reversing them, and with the Sound Blaster's shorter reads (1.3.0) a sound played that
   way would have come out wrong; writes scrambled the buffer they came from (vendor/patches/0020, also upstream).
+- Serial `S` shows `peak`, the loudest sample the PC played since the last `S`; serial `beep` plays a tone through
+  the speaker without the PC and shows the amplifier's enable bit. If the PC plays (a high peak) but nothing is heard,
+  even the beep: switching the Tab5 fully off and on again has brought the speaker back (restarts leave its codec and
+  amplifier powered).
 
 ## 1.3.0 (2026-11-01)
 
