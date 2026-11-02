@@ -183,6 +183,7 @@ static void t386_msync(void* p, size_t n, int flags) {
 #include "web.h"
 #include "fd_install.h"
 #include "linux_install.h"
+#include "cd_drive.h"
 
 static const char* pc_state() {
   return g_pc_stopped ? "stopped" : g_disk.drive >= 0 ? "paused: disk open" : g_user_pause ? "paused" : "running";
@@ -749,6 +750,11 @@ static void handle_serial() {
       else if (machine_name_used(name.c_str())) Serial.println("install: that name is in use");
       else if (!found) Serial.println("install: no such .iso at the card's root (1 MB or more)");
       else install_request('i', (name + ":" + iso).c_str());
+    } else if (line == "cd" || line.startsWith("cd ")) {   // cd [<file>.iso | -]: the disc in the drive, or change it
+      String a = line.length() > 3 ? line.substring(3) : String();
+      a.trim();
+      if (a.isEmpty()) Serial.printf("cd: %s\n", g_cd_drive < 0 ? "no drive" : cd_disc()[0] ? cd_disc() : "no disc");
+      else cd_change(a == "-" ? "" : a.startsWith("/") ? a.c_str() : ("/sdcard/" + a).c_str());
     } else if (line == "linux") {
       Serial.printf("linux: %s (%d%%)\n", g_lx_msg, (int)g_lx_pct);
     } else if (line == "reset") {
@@ -1022,11 +1028,11 @@ static void load_config(PCConfig& conf, bool have_sd) {
   }
   conf.width = EMU_W;   // the screen layout is fixed here, whatever the ini says
   conf.height = EMU_H;
-  // a disk that can't be opened would stop the emulator (assert); leave it out and say so
+  // a disk that can't be opened would stop the emulator (assert); leave it out and say so (a CD-ROM drive: empty)
   for (int i = 0; i < 4; ++i)
     if (conf.disks[i] && conf.disks[i][0] && !file_exists(conf.disks[i])) {
-      Serial.printf("disk %d: %s not found, left out\n", i, conf.disks[i]);
-      conf.disks[i] = nullptr;
+      Serial.printf("disk %d: %s not found, %s\n", i, conf.disks[i], conf.iscd[i] ? "the drive empty" : "left out");
+      conf.disks[i] = conf.iscd[i] ? "" : nullptr;
     }
   for (int i = 0; i < 2; ++i)
     if (conf.fdd[i] && conf.fdd[i][0] && !file_exists(conf.fdd[i])) {
@@ -1036,6 +1042,7 @@ static void load_config(PCConfig& conf, bool have_sd) {
   // an empty card: the settings panel opens, to install a machine (CD images don't count)
   g_setup_needed = have_sd && !file_exists("/sdcard/tiny386.ini") && !conf.disks[0] && !conf.disks[1] &&
                    !conf.fdd[0] && !conf.fdd[1];
+  cd_setup(conf);   // (cd_drive.h: a CD-ROM drive, empty if none was given)
   Serial.printf("pc: %ld KB RAM, %ld KB video, %d86%s | hda %s | hdb %s | hdc %s | hdd %s | fda %s | fdb %s\n",
                 conf.mem_size / 1024, conf.vga_mem_size / 1024, conf.cpu_gen, conf.fpu ? " + FPU" : "",
                 conf.disks[0] ?: "-", conf.disks[1] ?: "-", conf.disks[2] ?: "-", conf.disks[3] ?: "-",

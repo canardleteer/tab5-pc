@@ -1,0 +1,183 @@
+CD-ROM drives: a disc changed while the PC runs, as a real drive.
+- An empty drive: an image name of "" (ide_attach_cd), or the disc taken out (ide_change_cd with "").
+- No disc: TEST UNIT READY and reads answer "medium not present" (a read had gone to no file).
+- ide_change_cd reports a failed change (the image doesn't open: the old disc stays, the guest isn't told).
+- The UNIT ATTENTION after a change is reported once, then commands go on: it had held every command
+  until a REQUEST SENSE, which FreeDOS's UDVD2 never sends (the drive stayed "not ready" for good).
+
+--- a/ide.c
++++ b/ide.c
+@@ -353,6 +353,7 @@
+     uint8_t sense_key;
+     uint8_t asc;
+     uint8_t cdrom_changed;
++    uint8_t ua_reported; /* the pending UNIT ATTENTION was reported once */
+     int packet_transfer_size;
+     int elementary_transfer_size;
+     int io_buffer_index;
+@@ -1126,6 +1127,10 @@
+     printf("read %s: LBA=%d nb_sectors=%d\n", 0 ? "dma" : "pio",
+            lba, nb_sectors);
+ #endif
++    if (s->bs->get_sector_count(s->bs) == 0) {
++        ide_atapi_cmd_error(s, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT);
++        return;
++    }
+     ide_atapi_cmd_read_pio(s, lba, nb_sectors, sector_size);
+ }
+ 
+@@ -1164,16 +1169,19 @@
+     }
+ #endif
+     /* If there's a UNIT_ATTENTION condition pending, only
+-       REQUEST_SENSE and INQUIRY commands are allowed to complete. */
+-    if (s->sense_key == SENSE_UNIT_ATTENTION &&
++       REQUEST_SENSE and INQUIRY commands are allowed to complete,
++       until it has been reported once (drivers that never ask for
++       the sense data would get it for ever) */
++    if (s->sense_key == SENSE_UNIT_ATTENTION && !s->ua_reported &&
+         s->io_buffer[0] != GPCMD_REQUEST_SENSE &&
+         s->io_buffer[0] != GPCMD_INQUIRY) {
++        s->ua_reported = 1;
+         ide_atapi_cmd_check_status(s);
+         return;
+     }
+     switch(s->io_buffer[0]) {
+     case GPCMD_TEST_UNIT_READY:
+-        if (!s->cdrom_changed) {
++        if (!s->cdrom_changed && s->bs->get_sector_count(s->bs) > 0) {
+             ide_atapi_cmd_ok(s);
+         } else {
+             s->cdrom_changed = 0;
+@@ -2319,9 +2327,29 @@
+     return 0;
+ }
+ 
++/* a drive with no disc in it */
++static BlockDevice *block_device_init_empty(void)
++{
++    BlockDevice *bs = pcmalloc(sizeof(*bs));
++    BlockDeviceFile *bf = pcmalloc(sizeof(*bf));
++    memset(bs, 0, sizeof(*bs));
++    memset(bf, 0, sizeof(*bf));
++    bf->mode = BF_MODE_RO;
++    bs->opaque = bf;
++    bs->get_sector_count = bf_get_sector_count;
++    bs->read_async = bf_read_async;
++    bs->write_async = bf_write_async;
++    return bs;
++}
++
++/* filename "": the drive is empty */
+ int ide_attach_cd(IDEIFState *s, int drive, const char *filename)
+ {
+     assert(MAX_MULT_SECTORS >= 4);
++    if (!filename[0]) {
++        s->drives[drive] = ide_cddrive_init(s, block_device_init_empty());
++        return 0;
++    }
+ #ifdef IDE_ENABLE_CISO
+     BlockDevice *bs = block_device_init_ciso(filename);
+ #else
+@@ -2331,25 +2359,34 @@
+     return 0;
+ }
+ 
+-static void block_device_reinit(BlockDevice *bs, const char *filename)
++/* 0 if the drive now has the image filename ("": none) */
++static int block_device_reinit(BlockDevice *bs, const char *filename)
+ {
+ #ifdef IDE_ENABLE_CISO
+     if (bs->get_sector_count == ciso_get_sector_count) {
+         BlockDeviceCISO *bf = bs->opaque;
+         __ciso_close(bf);
+         __ciso_open(bf, filename);
+-        return;
++        return 0;
+     }
+ #endif
+     if (bs->get_sector_count != bf_get_sector_count) {
+         fprintf(stderr, "block_device_reinit: not supported device\n");
+-        return;
++        return -1;
+     }
+     BlockDeviceFile *bf = bs->opaque;
+ 
+     if (bf->mode != BF_MODE_RO || bs->get_chs) {
+         fprintf(stderr, "block_device_reinit: not supported device mode\n");
+-        return;
++        return -1;
++    }
++    if (!filename[0]) {
++        if (bf->f)
++            fclose(bf->f);
++        bf->f = NULL;
++        bf->nb_sectors = 0;
++        bf->start_offset = 0;
++        return 0;
+     }
+ 
+     int64_t file_size;
+@@ -2359,7 +2396,7 @@
+     f = fopen(filename, mode_str);
+     if (!f) {
+         fprintf(stderr, "block_device_reinit: open failed: %s\n", filename);
+-        return;
++        return -1;
+     }
+ 
+     fseeko(f, 0, SEEK_END);
+@@ -2370,18 +2407,21 @@
+         fclose(bf->f);
+     bf->f = f;
+     bf->start_offset = 0;
++    return 0;
+ }
+ 
+-void ide_change_cd(IDEIFState *sif, int drive, const char *filename)
++/* filename "": the disc taken out; 0 if done */
++int ide_change_cd(IDEIFState *sif, int drive, const char *filename)
+ {
+     IDEState *s = sif->drives[drive];
+-    if (s && s->drive_kind == IDE_CD) {
+-        block_device_reinit(s->bs, filename);
+-        s->sense_key = SENSE_UNIT_ATTENTION;
+-        s->asc = ASC_MEDIUM_MAY_HAVE_CHANGED;
+-        s->cdrom_changed = 1;
+-        ide_set_irq(s);
+-    }
++    if (!s || s->drive_kind != IDE_CD || block_device_reinit(s->bs, filename))
++        return -1;
++    s->sense_key = SENSE_UNIT_ATTENTION;
++    s->asc = ASC_MEDIUM_MAY_HAVE_CHANGED;
++    s->ua_reported = 0;
++    s->cdrom_changed = 1;
++    ide_set_irq(s);
++    return 0;
+ }
+ 
+ PCIDevice *piix3_ide_init(PCIBus *pci_bus, int devfn)
+--- a/ide.h
++++ b/ide.h
+@@ -31,7 +31,7 @@
+ IDEIFState *ide_allocate(int irq, void *pic, void (*set_irq)(void *pic, int irq, int level));
+ int ide_attach(IDEIFState *s, int drive, const char *filename);
+ int ide_attach_cd(IDEIFState *s, int drive, const char *filename);
+-void ide_change_cd(IDEIFState *sif, int drive, const char *filename);
++int ide_change_cd(IDEIFState *sif, int drive, const char *filename);
+ 
+ void ide_data_writew(void *opaque, uint32_t val);
+ uint32_t ide_data_readw(void *opaque);
+--- a/pc.c
++++ b/pc.c
+@@ -795,8 +795,8 @@
+ 	pc->ide2 = ide_allocate(15, pc->pic, set_irq);
+ 	const char **disks = conf->disks;
+ 	for (int i = 0; i < 4; i++) {
+-		if (!disks[i] || disks[i][0] == 0)
+-			continue;
++		if (!disks[i] || (disks[i][0] == 0 && !conf->iscd[i]))
++			continue;	/* (a CD-ROM drive given no image: empty) */
+ 		int ret;
+ 		if (i < 2) {
+ 			if (conf->iscd[i])

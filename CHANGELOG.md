@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- A CD-ROM tray on the right side panel, between the lights and the battery: the disc's name; a tap opens a dialog
+  with the `.iso` files at the card's root and "No disc", **Insert** / **Eject**. The disc changes while the PC runs
+  (the PC is told the medium changed, as by a real drive) and is saved in the machine's settings file (its `cdX`
+  line), so it stays in the drive across restarts. The right panel's three windows (lights, CD tray, battery) are
+  one size. Every machine has a CD-ROM drive now: its settings file's, or an empty one as `cdc` (`cdd` if `hdc` is
+  taken); a disc not on the card leaves the drive empty instead of removing it. FreeDOS installs keep their CD-ROM
+  driver (`CDROM.BAT` no longer gets a `rem`). Serial `cd [<file>.iso | -]`. tiny386's drive gets empty drives,
+  "medium not present" with no disc, and a medium-change notice reported once (FreeDOS's CD-ROM driver never asks
+  for it, and the drive stayed "not ready") (vendor/patches/0021).
 - A real-mode interrupt (hardware ones too) changes SP only, as on x86: it set ESP to (ESP - 6) & 0xffff, clearing
   ESP's upper half, which a DOS extender's real-mode calls can keep a value in (vendor/patches/0019; sent to
   tiny386 upstream with the AAM, 9th-column and Sound Blaster DMA fixes).

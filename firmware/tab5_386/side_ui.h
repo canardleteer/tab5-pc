@@ -10,6 +10,8 @@
 //   setup     a tap: the settings panel
 //   lights    power (green on, amber paused, dim green off), disk (amber: the PC's disk used lately; dim when not),
 //             the battery (grey; red at 15% or less)
+//   CD tray   on the right, between the lights and the battery: the CD-ROM drive (cd_drive.h), its disc's name; a tap
+//             opens the dialog choosing another (an .iso at the card's root) or none (settings_ui.h's MODAL_CD)
 // Each panel is an LVGL display of its own (SIDE_W x SCR_H, anti-aliased), drawn where something changed and put on
 // the panel by the PPA (settings_ui.h's ppa_blit), only while the settings panel is closed. Drawn at once when
 // something changed (lv_refr_now), not by LVGL's timers: nothing here moves by itself, and LVGL run every 10 ms
@@ -19,9 +21,13 @@
 
 static constexpr int SIDE_W = OUT_X, SIDE_HOLD_MS = 1000;
 static constexpr int64_t SIDE_DISK_MS = 120;   // the disk light stays on this long after the disk was used
-enum { SB_POWER, SB_RESET, SB_PAUSE, SB_SETUP, SB_N };
+enum { SB_POWER, SB_RESET, SB_PAUSE, SB_SETUP, SB_N, SB_TRAY = SB_N + 1 };   // (SB_N: anywhere, panels off)
 static constexpr int SB_SIZE = 112;
 static int sb_y(int i) { return 104 + i * 170; }   // a button's centre
+// The right panel's three windows (lights, CD tray, battery): one size, evenly spaced
+static constexpr int WELL_X = 16, WELL_W = SIDE_W - 32, WELL_H = 160;
+static constexpr int well_y(int i) { return 32 + i * (SCR_H - 64 - WELL_H) / 2; }
+static constexpr int TRAY_X = WELL_X, TRAY_Y = well_y(1), TRAY_W = WELL_W, TRAY_H = WELL_H;   // the CD tray
 
 // the case: dark grey, a dark seam toward the picture (a light one there met the picture's text); keys raised on it (a light top edge, a shadow), lights in
 // recessed windows. Flat colours that RGB565 holds exactly (green steps twice as fine as red and blue: in between,
@@ -38,12 +44,15 @@ struct SideState {   // what is shown
   bool disk;
   int batt_state, batt_level;   // BatteryPresence state, the level
   bool batt_charging;
+  uint32_t cd_seq;   // the disc (g_cd_seq)
+  bool cd_pressed, cd_enabled;
 };
 static SideState g_side_shown;
 static bool g_side_made = false, g_side_fresh = true;   // fresh: every part set again (just made)
 static lv_display_t* g_side_disp[2];
 static lv_obj_t *g_sb_key[SB_N], *g_sb_icon[SB_N], *g_sb_text[SB_N], *g_sb_ring[SB_N];
 static lv_obj_t *g_sl_power, *g_sl_disk, *g_sl_batt_icon, *g_sl_batt_text;
+static lv_obj_t *g_cd_drawer, *g_cd_label, *g_cd_name;
 static int g_side_pressed = -1;    // the button under the finger (SB_N: anywhere, with the side panels off)
 static int64_t g_side_press_at = 0;
 static bool g_side_fired = false;  // the held button's action is done (until the finger lifts)
@@ -116,7 +125,7 @@ static lv_obj_t* side_led(lv_obj_t* parent, int x, int y, const char* name) {
   return led;
 }
 
-static void side_key(lv_obj_t* scr, int i) {
+static void side_key_style(lv_obj_t* b) {   // raised, pressed in while touched
   static lv_style_t key, down;
   static bool styled = false;
   if (!styled) {
@@ -141,11 +150,15 @@ static void side_key(lv_obj_t* scr, int i) {
     lv_style_set_shadow_offset_y(&down, 1);
     lv_style_set_translate_y(&down, 3);
   }
+  lv_obj_add_style(b, &key, 0);
+  lv_obj_add_style(b, &down, LV_STATE_PRESSED);
+}
+
+static void side_key(lv_obj_t* scr, int i) {
   static const char* const icons[SB_N] = {LV_SYMBOL_POWER, LV_SYMBOL_REFRESH, LV_SYMBOL_PAUSE, LV_SYMBOL_SETTINGS};
   static const char* const names[SB_N] = {"POWER", "RESET", "PAUSE", "SETUP"};
   lv_obj_t* b = g_sb_key[i] = side_box(scr, (SIDE_W - SB_SIZE) / 2, sb_y(i) - SB_SIZE / 2, SB_SIZE, SB_SIZE);
-  lv_obj_add_style(b, &key, 0);
-  lv_obj_add_style(b, &down, LV_STATE_PRESSED);
+  side_key_style(b);
   if (i == SB_POWER || i == SB_RESET) {   // the hold's ring, around the icon
     lv_obj_t* r = g_sb_ring[i] = lv_arc_create(b);
     lv_obj_remove_style_all(r);
@@ -169,6 +182,36 @@ static void side_key(lv_obj_t* scr, int i) {
   lv_obj_align(t, LV_ALIGN_BOTTOM_MID, 0, -12);
 }
 
+// The CD tray: a drive's front in a recessed bay, its drawer (a groove across it; pressed in while touched) and the
+// disc's name. The whole bay is the button.
+static void side_tray(lv_obj_t* scr) {
+  lv_obj_t* w = side_well(scr, TRAY_X, TRAY_Y, TRAY_W, TRAY_H);
+  lv_obj_t* t = g_cd_label = side_text(w, &lv_font_montserrat_14, K_LABEL, 1);
+  lv_label_set_text(t, "CD-ROM");
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 26);
+  lv_obj_t* drawer = g_cd_drawer = side_box(w, 9, 54, TRAY_W - 20, 30);
+  lv_obj_set_style_radius(drawer, 6, 0);
+  lv_obj_set_style_bg_opa(drawer, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(drawer, lv_color_hex(K_KEY), 0);
+  lv_obj_set_style_border_width(drawer, 1, 0);
+  lv_obj_set_style_border_side(drawer, LV_BORDER_SIDE_TOP, 0);
+  lv_obj_set_style_border_color(drawer, lv_color_hex(K_KEY_LIGHT), 0);
+  lv_obj_set_style_outline_width(drawer, 1, 0);
+  lv_obj_set_style_outline_color(drawer, lv_color_hex(K_KEY_RIM), 0);
+  lv_obj_set_style_bg_color(drawer, lv_color_hex(K_KEY_DOWN), LV_STATE_PRESSED);
+  lv_obj_set_style_border_color(drawer, lv_color_hex(K_KEY), LV_STATE_PRESSED);
+  lv_obj_set_style_translate_y(drawer, 2, LV_STATE_PRESSED);
+  lv_obj_t* groove = side_box(drawer, 10, 13, TRAY_W - 40, 4);
+  lv_obj_set_style_radius(groove, 2, 0);
+  lv_obj_set_style_bg_opa(groove, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(groove, lv_color_hex(K_EDGE), 0);
+  g_cd_name = side_text(w, &lv_font_montserrat_14, K_INK, 0);
+  lv_obj_set_pos(g_cd_name, 6, 96);
+  lv_obj_set_size(g_cd_name, TRAY_W - 14, 36);
+  lv_label_set_long_mode(g_cd_name, LV_LABEL_LONG_DOT);   // (two lines, then ...)
+  lv_obj_set_style_text_align(g_cd_name, LV_TEXT_ALIGN_CENTER, 0);
+}
+
 static void side_setup() {   // after ui_setup (lv_init, the settings panel's display: the default one again after)
   for (int k = 0; k < 2; ++k) {
     lv_display_t* d = g_side_disp[k] = lv_display_create(SIDE_W, SCR_H);
@@ -187,10 +230,11 @@ static void side_setup() {   // after ui_setup (lv_init, the settings panel's di
     if (k == 0) {
       for (int i = 0; i < SB_N; ++i) side_key(scr, i);
     } else {
-      lv_obj_t* w = side_well(scr, 16, 32, SIDE_W - 32, 132);
-      g_sl_power = side_led(w, 18, 34, "POWER");
-      g_sl_disk = side_led(w, 18, 80, "DISK");
-      lv_obj_t* bw = side_well(scr, 16, SCR_H - 32 - 128, SIDE_W - 32, 128);
+      lv_obj_t* w = side_well(scr, WELL_X, well_y(0), WELL_W, WELL_H);
+      g_sl_power = side_led(w, 18, 47, "POWER");
+      g_sl_disk = side_led(w, 18, 93, "DISK");
+      side_tray(scr);
+      lv_obj_t* bw = side_well(scr, WELL_X, well_y(2), WELL_W, WELL_H);
       g_sl_batt_icon = side_text(bw, &lv_font_montserrat_36, K_LABEL, 0);
       lv_obj_align(g_sl_batt_icon, LV_ALIGN_CENTER, 0, -18);
       g_sl_batt_text = side_text(bw, &lv_font_montserrat_20, K_LABEL, 1);
@@ -241,6 +285,9 @@ static SideState side_wanted(int64_t now) {
   s.batt_state = g_batt.presence.state;
   s.batt_level = g_batt.level;
   s.batt_charging = g_batt.charging;
+  s.cd_seq = g_cd_seq;
+  s.cd_pressed = g_side_pressed == SB_TRAY;
+  s.cd_enabled = g_cd_drive >= 0 && !g_pc_stopped;
   return s;
 }
 
@@ -301,6 +348,18 @@ static int side_show(const SideState& s) {
     lv_label_set_text(g_sl_batt_text, text);
     lv_obj_align(g_sl_batt_text, LV_ALIGN_CENTER, 0, 30);
   }
+  if (all || s.cd_pressed != was.cd_pressed) {
+    changed |= 2;
+    if (s.cd_pressed) lv_obj_add_state(g_cd_drawer, LV_STATE_PRESSED);
+    else lv_obj_remove_state(g_cd_drawer, LV_STATE_PRESSED);
+  }
+  if (all || s.cd_seq != was.cd_seq || s.cd_enabled != was.cd_enabled) {
+    changed |= 2;
+    const String name = cd_disc_name();
+    lv_label_set_text(g_cd_name, !s.cd_enabled ? (g_cd_drive < 0 ? "No drive" : "") : name.length() ? name.c_str() : "No disc");
+    lv_obj_set_style_text_color(g_cd_name, lv_color_hex(s.cd_enabled && name.length() ? K_INK : K_INK_OFF), 0);
+    lv_obj_set_style_text_color(g_cd_label, lv_color_hex(s.cd_enabled ? K_LABEL : K_INK_OFF), 0);
+  }
   was = s;
   return changed;
 }
@@ -360,7 +419,11 @@ static bool side_owns(int x, int y) {   // a touch starting there is the side pa
 }
 
 static int side_button_at(int x, int y) {
-  if (!g_side_on || x >= SIDE_W) return -1;
+  if (!g_side_on) return -1;
+  if (x >= SCR_W - SIDE_W)   // the right panel: the CD tray
+    return x >= SCR_W - SIDE_W + TRAY_X - 8 && x < SCR_W - SIDE_W + TRAY_X + TRAY_W + 8 && y >= TRAY_Y - 8 &&
+           y < TRAY_Y + TRAY_H + 8 ? SB_TRAY : -1;
+  if (x >= SIDE_W) return -1;
   for (int i = 0; i < SB_N; ++i)
     if (abs(y - sb_y(i)) <= SB_SIZE / 2 + 8) return i;
   return -1;
@@ -376,7 +439,7 @@ static void side_touch(int x, int y, int kind, int64_t now) {
   }
   if (g_side_pressed < 0) return;
   if (kind == 2) {   // slid off the button: nothing
-    if (g_side_pressed < SB_N && side_button_at(x, y) != g_side_pressed) g_side_pressed = -1;
+    if (g_side_pressed != SB_N && side_button_at(x, y) != g_side_pressed) g_side_pressed = -1;
     return;
   }
   const int i = g_side_pressed;
@@ -387,4 +450,5 @@ static void side_touch(int x, int y, int kind, int64_t now) {
   else if ((i == SB_POWER || i == SB_N) && g_pc_off) pc_power_on();
   else if (i == SB_PAUSE && on) pc_set_paused(!g_user_pause);
   else if (i == SB_SETUP) panel_open();
+  else if (i == SB_TRAY && !g_pc_stopped) cd_dialog_open();
 }

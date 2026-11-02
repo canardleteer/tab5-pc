@@ -71,7 +71,7 @@ v3.x for later ones: `CHIP=postv3 tools/build.sh upload`. A build for the wrong 
 
 3. Copying the packages takes about 20 minutes. When the installer asks to reboot, say yes: the Tab5 sets the
    machine up to start from its `C.IMG` alone, removes the installer's files from the card, and adjusts `C:\FDAUTO.BAT` for this
-   PC (no CD-ROM drive by default; the Sound Blaster's `BLASTER` setting). FreeDOS then starts at the `C:\>` prompt.
+   PC (its CD-ROM driver; the Sound Blaster's `BLASTER` setting). FreeDOS then starts at the `C:\>` prompt.
 
    ![Installing](docs/images/fd-progress.png)
 
@@ -108,8 +108,8 @@ PC running, then into the new machine.
 - **ISO**: a PC that starts from an installer CD. Copy the CD's `.iso` to the root of the card first (the web page's
   SD card tab), then choose it in the dialog (the machine's name is suggested from it). The new machine gets an empty
   hard disk (`C.IMG`, 512 MB, partitioned and formatted) and the CD in its drive; it starts from the CD while C: has
-  no system, and from C: once the installer has put one there. The CD stays in the drive (delete the `cdc` line in
-  its settings file to take it out).
+  no system, and from C: once the installer has put one there. The CD stays in the drive until the CD-ROM tray (see
+  [Using it](#using-it)) takes it out.
 
 A name already on the card (its settings file or its folder) can't be used again, except to update Sprig Linux. If an
 install fails, the screen says why, and a tap goes back to the machine there was. Serial: `machines`,
@@ -142,8 +142,14 @@ right button, tap and touch again to drag. DOS programs need a mouse driver (CTM
 off; tap it: on again, starting afresh; the PC also goes off when its system powers it off, e.g. FreeDOS's
 `FDAPM POWEROFF`), **RESET** (hold it a second), **PAUSE** (the screen dims, the sound stops) and **SETUP** (the
 settings panel); on the right the power light (green on, amber paused), the disk light (amber; both dim when off, as a real LED's
-lens) and the battery (red when low). A ring
+lens), the **CD-ROM** tray and the battery (red when low). A ring
 fills around POWER's or RESET's icon while you hold it; a short tap on either does nothing while the PC runs.
+
+**The CD-ROM drive**: every machine has one, empty unless its settings file names a disc. The tray shows the disc's
+name; tap it for a dialog listing the `.iso` files at the root of the card (1 MB or more) and **No disc**: **Insert**
+or **Eject** changes the disc while the PC runs, as with a real drive (FreeDOS notices within a few seconds; `dir` on
+an empty drive says it is not ready). The disc is saved in the machine's settings file, so it is still in the drive
+at the next start. Serial: `cd` shows the disc, `cd <file>.iso` inserts one, `cd -` ejects it.
 
 **Sound**: the PC speaker, the Sound Blaster 16 (`BLASTER=A220 I5 D1 H5 T6`) and AdLib play through the Tab5's
 speaker.
@@ -223,8 +229,9 @@ the one chosen in the panel); the Tab5 reads it when it starts:
 | `[cpu]` `gen` | 3, 4, 5, 6 = 386, 486, 586, 686 |
 | `fpu` | 1: an x87 maths coprocessor |
 
-After a FreeDOS install, a CD drive also needs its driver: add a `cdc` line and delete the `rem` before the
-`CDROM.BAT` calls in `C:\FDAUTO.BAT`.
+Without a `cda`-`cdd` line a machine still has a CD-ROM drive, empty, as `cdc` (`cdd` if `hdc` is taken); the
+CD-ROM tray writes the disc it inserts into this file. FreeDOS installed with Tab5 PC 1.3.0 or earlier has a `rem`
+before the `CDROM.BAT` call in `C:\FDAUTO.BAT` (its CD-ROM driver): delete it to use the drive.
 
 More disks: `.venv/bin/python tools/dosdisk.py new sdcard/E.IMG --mb 1000` makes an empty one (`hdc = /sdcard/E.IMG`);
 `dosdisk.py put` and `ls` copy files in and list them on the computer.

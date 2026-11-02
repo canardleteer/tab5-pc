@@ -266,7 +266,7 @@ static const char* FD_INI_FINAL =
     "[pc]\r\n"
     "; hard disks hda hdb hdc hdd, CD-ROMs cda cdb cdc cdd (an .iso), floppies fda fdb (1.44 MB etc. images)\r\n"
     "hda = @/C.IMG\r\n;hdb = /sdcard/D.IMG\r\n;fda = /sdcard/floppy.img\r\n"
-    "; a CD-ROM drive: also delete the \"rem\" before CDROM.BAT's call in C:\\FDAUTO.BAT (its driver)\r\n"
+    "; the CD-ROM drive's disc (an .iso; the tray beside the PC's picture changes it; without the line: empty)\r\n"
     ";cdc = /sdcard/cd.iso\r\n"
     "mem_size = 16M\r\nvga_mem_size = 2M\r\n"
     "; 1: the hard disks' geometry in the CMOS (some systems want it, others not)\r\nfill_cmos = 1\r\n"
@@ -420,7 +420,7 @@ static bool fd_install_finish() {
     Serial.println("install: a system is on C.IMG");
     return true;
   }
-  fd_fix_startup(false);
+  fd_fix_startup(true);   // (every machine has a CD-ROM drive: cd_drive.h)
   if (!fd_write_file(FD_INI, fd_ini_text(FD_INI_FINAL).c_str())) return false;
   unlink(FD_SETUP);
   unlink(FD_NOCD);

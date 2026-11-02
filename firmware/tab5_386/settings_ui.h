@@ -29,9 +29,11 @@ static lv_obj_t *ui_mach_dd, *ui_mach_start, *ui_inst_msg, *ui_dos_btn, *ui_lnx_
 static int64_t g_start_armed = 0;   // "Start" tapped once at this time (as Reset PC: it restarts the Tab5)
 // The dialog: a Wi-Fi network's name and password, or a new machine's name (Install DOS / Linux / ISO; for an ISO,
 // the CD image too)
-enum ModalMode { MODAL_WIFI, MODAL_DOS, MODAL_LINUX, MODAL_ISO };
+// (MODAL_CD: the CD-ROM drive's disc, from the side panel's tray: cd_drive.h)
+enum ModalMode { MODAL_WIFI, MODAL_DOS, MODAL_LINUX, MODAL_ISO, MODAL_CD };
 static ModalMode g_modal_mode = MODAL_WIFI;
-static lv_obj_t *ui_pass_row, *ui_iso_dd;
+static lv_obj_t *ui_pass_row, *ui_iso_dd, *ui_modal_box;
+static bool g_cd_from_tray = false;   // the CD dialog opened the panel (the side panel's tray): closing it closes the panel
 static String g_iso_name;   // the name the dialog suggested for the CD image chosen (replaced when another is chosen)
 static String g_update_ok;   // the name Install was tapped for once (it warns that the PC stops): again installs
 static bool g_scanning = false, g_connect_pending = false, g_touch_block = false;
@@ -48,6 +50,7 @@ static void ui_wifi_request_do();
 static String g_pending_ssid;
 
 static void panel_close();
+static void panel_open();
 static void side_cancel();   // (side_ui.h)
 
 // ---- LVGL plumbing ------------------------------------------------------------------------------------------
@@ -402,10 +405,27 @@ static void ui_scan_poll() {
 static void ui_hide_modal() {
   g_connect_pending = false;
   lv_obj_add_flag(ui_modal, LV_OBJ_FLAG_HIDDEN);
+  if (g_cd_from_tray) {   // back to the PC
+    g_cd_from_tray = false;
+    panel_close();
+  }
+}
+
+// The dialog's look for typing (the keyboard below it), or for a choice alone (CD: no keyboard, the box centred)
+static void ui_modal_typing(bool typing) {
+  if (typing) {
+    lv_obj_remove_flag(ui_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(ui_modal_box, LV_ALIGN_TOP_LEFT, 240, 14);
+  } else {
+    lv_obj_add_flag(ui_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(ui_modal_box, LV_ALIGN_CENTER, 0, -40);
+  }
 }
 
 static void ui_name_submit();
+static void ui_cd_submit();
 static void ui_connect() {
+  if (g_modal_mode == MODAL_CD) { ui_cd_submit(); return; }
   if (g_modal_mode != MODAL_WIFI) { ui_name_submit(); return; }
   const char* ssid = lv_textarea_get_text(ui_ta_ssid);
   if (!ssid[0]) { lv_label_set_text(ui_msg, "Enter the network name"); return; }
@@ -421,6 +441,7 @@ static void ui_connect() {
 static void ui_show_modal(const char* ssid, bool secure) {
   const bool other = ssid == nullptr;
   g_modal_mode = MODAL_WIFI;
+  ui_modal_typing(true);
   lv_textarea_set_placeholder_text(ui_ta_ssid, "Network name");
   lv_obj_remove_flag(ui_pass_row, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(ui_iso_dd, LV_OBJ_FLAG_HIDDEN);
@@ -455,7 +476,9 @@ static String ui_iso_machine_name(const String& iso) {
 }
 
 // The CD image chosen in the dialog: its name suggested for the machine, unless one was typed
+static void ui_cd_chosen();
 static void ui_iso_chosen() {
+  if (g_modal_mode == MODAL_CD) { ui_cd_chosen(); return; }
   g_update_ok = "";   // (another CD: Install asks again)
   lv_label_set_text(lv_obj_get_child(ui_connect_btn, 0), "Install");
   const String typed = lv_textarea_get_text(ui_ta_ssid);
@@ -469,6 +492,7 @@ static void ui_iso_chosen() {
 static void ui_show_name_modal(ModalMode mode) {
   g_modal_mode = mode;
   g_update_ok = "";
+  ui_modal_typing(true);
   lv_label_set_text(ui_modal_title, mode == MODAL_DOS     ? "Install DOS: machine name"
                                     : mode == MODAL_LINUX ? "Install Linux: machine name"
                                                           : "Install ISO: machine name");
@@ -520,6 +544,63 @@ static void ui_name_submit() {
   }
   if (iso) install_request('i', (name + ":" + g_fd_isos[sel]).c_str());
   else install_request(g_modal_mode == MODAL_DOS ? 'd' : 'l', name.c_str());
+}
+
+// ---- the CD-ROM drive's disc (cd_drive.h): "No disc" or the CD images at the card's root
+
+static void ui_cd_chosen() {
+  const int sel = lv_dropdown_get_selected(ui_iso_dd);
+  const String now = cd_disc_name();
+  const bool same = sel == 0 ? now.isEmpty() : g_fd_isos[sel - 1].equalsIgnoreCase(now);
+  lv_label_set_text(lv_obj_get_child(ui_connect_btn, 0), sel == 0 ? LV_SYMBOL_EJECT "  Eject" : "Insert");
+  if (same) lv_obj_add_state(ui_connect_btn, LV_STATE_DISABLED);
+  else lv_obj_remove_state(ui_connect_btn, LV_STATE_DISABLED);
+  lv_label_set_text(ui_msg, now.isEmpty() ? "The drive is empty" : ("In the drive: " + now).c_str());
+  lv_obj_set_style_text_color(ui_msg, lv_color_hex(C_DIM), 0);
+}
+
+static void ui_show_cd_modal() {
+  g_modal_mode = MODAL_CD;
+  ui_modal_typing(false);
+  lv_label_set_text(ui_modal_title, "CD-ROM drive: the disc");
+  lv_obj_add_flag(ui_ta_ssid, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(ui_pass_row, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_remove_state(ui_ta_ssid, LV_STATE_FOCUSED);
+  lv_obj_remove_state(ui_ta_pass, LV_STATE_FOCUSED);
+  lv_keyboard_set_textarea(ui_kb, nullptr);
+  fd_find_isos();
+  String opts = "No disc";
+  int cur = 0;
+  const String now = cd_disc_name();
+  for (int i = 0; i < g_fd_iso_count; ++i) {
+    opts += "\n" + g_fd_isos[i];
+    if (g_fd_isos[i].equalsIgnoreCase(now)) cur = i + 1;
+  }
+  lv_dropdown_set_options(ui_iso_dd, opts.c_str());
+  lv_dropdown_set_selected(ui_iso_dd, cur);
+  lv_obj_remove_flag(ui_iso_dd, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(ui_spinner, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_remove_flag(ui_modal, LV_OBJ_FLAG_HIDDEN);
+  ui_cd_chosen();
+}
+
+static void ui_cd_submit() {
+  const int sel = lv_dropdown_get_selected(ui_iso_dd);
+  if (sel > g_fd_iso_count) return;
+  if (!cd_change(sel == 0 ? "" : ("/sdcard/" + g_fd_isos[sel - 1]).c_str())) {
+    lv_label_set_text(ui_msg, g_cd_drive < 0 ? "This PC has no CD-ROM drive" : "That image didn't open");
+    lv_obj_set_style_text_color(ui_msg, lv_color_hex(C_WARN), 0);
+    return;
+  }
+  ui_hide_modal();
+}
+
+// The side panel's tray: the dialog alone over the settings panel; done or cancelled, back to the PC
+static void cd_dialog_open() {
+  if (g_cd_drive < 0 || g_pc_stopped) return;
+  panel_open();
+  g_cd_from_tray = true;
+  ui_show_cd_modal();
 }
 
 static void ui_connect_poll() {
@@ -608,7 +689,7 @@ static void ui_build_modal(lv_obj_t* scr) {
   lv_obj_set_style_radius(ui_modal, 0, 0);
   lv_obj_remove_flag(ui_modal, LV_OBJ_FLAG_SCROLLABLE);
 
-  lv_obj_t* box = ui_card(ui_modal, 240, 14, 800, 0);   // as tall as what it shows (at most ~358: the keyboard's
+  lv_obj_t* box = ui_modal_box = ui_card(ui_modal, 240, 14, 800, 0);   // as tall as what it shows (at most ~358: the keyboard's
   lv_obj_set_height(box, LV_SIZE_CONTENT);              // top is at y 400, and the box ~12 lower: ui_modal's padding)
   lv_obj_set_style_pad_all(box, 18, 0);
   lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
@@ -739,6 +820,7 @@ static bool g_side_on = true;      // the buttons and lights beside the PC's pic
 static void panel_close() {
   if (!g_panel_open) return;
   ui_wifi_request_do();   // (a switch tapped just before)
+  g_cd_from_tray = false;
   ui_hide_modal();
   g_panel_open = false;
   if (WiFi.scanComplete() >= 0) WiFi.scanDelete();
