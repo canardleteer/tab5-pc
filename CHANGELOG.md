@@ -74,6 +74,10 @@
   EMM386), to code in another page, went on with the old code segment's base and ran whatever was translated at
   that offset in the calling segment. FreeDOS's EDIT under JemmEx (the FreeDOS installer's default) stopped with
   "exception 06" almost every time it started after the first; now 8 starts of 8 run. (Since 1.0.0.)
+- Text modes are drawn 8 dots wide by default (640 x 400, scaled 1.5 to the panel) instead of 9 (720 x 400, scaled
+  4/3): shaded backgrounds (FreeDOS EDIT's desktop) showed vertical stripes. `vga_force_8dm = 0` in a machine's ini
+  brings 9-dot cells back. With 9-dot cells, only the box-drawing characters C0h-DFh repeat their 8th column in the
+  9th, as on the VGA; the shades B0h-B2h no longer get a doubled dot in every cell (vendor/patches/0018).
 
 ## 1.2.1 (2026-10-28)
 

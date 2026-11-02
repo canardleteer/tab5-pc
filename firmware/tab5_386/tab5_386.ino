@@ -990,6 +990,8 @@ static void load_config(PCConfig& conf, bool have_sd) {
   conf.cpu_gen = 4;
   conf.fpu = 0;
   conf.fill_cmos = 1;
+  conf.vga_force_8dm = 1;   // text 8 dots wide (640 x 400): the 9th column of the VGA's cells, scaled 4/3 to the
+                            // panel, striped shaded backgrounds; an ini's vga_force_8dm = 0 brings it back
   const String ini = machine_path();   // (/sdcard/tiny386.ini, or the machine chosen in the panel: linux_install.h)
   // an installer running in it (fd_install.h), and now a system on its C.IMG: the install is over
   fd_use(ini);

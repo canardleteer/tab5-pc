@@ -219,6 +219,7 @@ the one chosen in the panel); the Tab5 reads it when it starts:
 | `mem_size`, `vga_mem_size` | memory, e.g. `16M`, `2M` |
 | `fill_cmos` | 1: the hard disks' geometry in the CMOS |
 | `bios`, `vga_bios` | other BIOS images on the card (the built-in SeaBIOS otherwise) |
+| `vga_force_8dm` | 0: text in the VGA's 9-dot cells (720 x 400); 8 dots wide otherwise (640 x 400, no stripes in shaded backgrounds) |
 | `[cpu]` `gen` | 3, 4, 5, 6 = 386, 486, 586, 686 |
 | `fpu` | 1: an x87 maths coprocessor |
 
