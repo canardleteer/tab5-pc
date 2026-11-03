@@ -262,6 +262,17 @@ static void clear_pc_area() {
   t386_msync(g_panel_fb + (size_t)FB_W * OUT_X, (size_t)FB_W * OUT_W * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
 }
 
+// The PC's part of the panel at half brightness (paused: its picture dimmed, the side panels and backlight as they
+// were). The PPA wrote it: the cache's copy goes first.
+static void dim_pc_area() {
+  uint16_t* p = g_panel_fb + (size_t)FB_W * OUT_X;
+  const size_t n = (size_t)FB_W * OUT_W;
+  t386_msync(p, n * 2, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+  uint32_t* q = (uint32_t*)p;   // two pixels at a time: each colour halved (RGB565: 5, 6, 5 bits)
+  for (size_t i = 0; i < n / 2; ++i) q[i] = (q[i] >> 1) & 0x7BEF7BEF;
+  t386_msync(p, n * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+}
+
 // tiny386's redraw callback (it always passes the whole buffer): put the bands of BAND_H rows that changed since
 // the last time onto the panel. A blinking cursor or a typed character costs one band, not the whole screen.
 static constexpr int BAND_H = 16, BANDS = EMU_H / BAND_H;
@@ -783,7 +794,45 @@ static void handle_serial() {
 static void display_task(void*) {
   int64_t last_refresh = 0;
   uint32_t last_hash = 0;
-  bool stopped_shown = false, off_shown = false;
+  bool stopped_shown = false, off_shown = false, paused_shown = false;
+  // the PC's picture onto the panel where it changed (native modes by their changed lines, others by bands)
+  auto refresh = [&](int64_t now) {
+#if T386_JIT_HOLD == 2
+    JitHold whole;   // (the whole refresh, its PSRAM writes too)
+#endif
+    T386Native n;
+    if (g_native_on && g_native_fb &&
+        t386_vga_render_native(g_pc->vga, g_native_fb, g_native_dirty, g_native_w, g_native_h, g_native.w == 0, &n)) {
+      // (the renderer fingerprints the lines itself: no whole-frame fingerprint first; its time counts as the
+      // check's, and the conversion of the lines that changed with it)
+      const int64_t t1 = esp_timer_get_time();
+      g_stats.hash_us += t1 - now;
+      if (n.changed) {
+        show_native(n);
+        g_stats.refresh_us += esp_timer_get_time() - t1;
+      } else {
+        ++g_stats.skipped;
+      }
+      last_hash = 0;
+    } else {
+      const uint32_t hash = t386_vga_frame_hash(g_pc->vga);
+      const int64_t t1 = esp_timer_get_time();
+      g_stats.hash_us += t1 - now;
+      if (hash != last_hash) {   // only when the picture changed
+        last_hash = hash;
+        if (g_native.w) {   // from a native picture to tiny386's: all of it again (it covers the margins)
+          g_native.w = 0;
+          g_bands_valid = false;
+        }
+        t386_vga_snapshot(g_pc->vga, g_vga_shadow, g_vga_shadow_size);
+        vga_refresh(g_pc->vga, redraw, nullptr, g_pc->full_update != 0);
+        if (g_pc->full_update == 2) g_pc->full_update = 0;
+        g_stats.refresh_us += esp_timer_get_time() - t1;
+      } else {
+        ++g_stats.skipped;
+      }
+    }
+  };
   if (g_setup_needed) {   // nothing on the card yet: Wi-Fi on, and the panel's Install DOS / Install Linux
     wifi_enable(true);
     panel_open();
@@ -802,7 +851,7 @@ static void display_task(void*) {
     type_poll();
     const int64_t now = esp_timer_get_time();
     if (g_panel_open) {   // the settings panel instead of the PC's screen
-      side_state_poll();   // (pause or resume in the panel: the sound and backlight follow at once)
+      side_state_poll();   // (pause or resume in the panel: the sound follows at once)
       ui_poll();
       vTaskDelay(1);
       continue;
@@ -820,6 +869,7 @@ static void display_task(void*) {
       last_refresh = 0;
       stopped_shown = false;
       off_shown = false;
+      paused_shown = false;
       side_invalidate();
     }
     if (g_pc_stopped) {   // (web.h, pc_stop) the PC's screen no longer changes: say why
@@ -859,43 +909,28 @@ static void display_task(void*) {
       clear_pc_area();
     }
     side_poll(now / 1000);
+    // Paused (PAUSE, the settings panel's Pause, the web page): the picture brought up to date once, then dimmed and
+    // left alone (a text mode's cursor stops blinking too); in full again when the PC goes on
+    if (g_user_pause) {
+      if (!paused_shown) {
+        refresh(now);
+        dim_pc_area();
+        paused_shown = true;
+      }
+      vTaskDelay(10);
+      continue;
+    }
+    if (paused_shown) {
+      paused_shown = false;
+      last_hash = 0;
+      g_bands_valid = false;
+      g_native.w = 0;
+      g_box_w = 0;
+      last_refresh = 0;
+    }
     if (g_frame_us && now - last_refresh >= g_frame_us) {
       last_refresh = now;
-#if T386_JIT_HOLD == 2
-      JitHold whole;   // (the whole refresh, its PSRAM writes too)
-#endif
-      T386Native n;
-      if (g_native_on && g_native_fb &&
-          t386_vga_render_native(g_pc->vga, g_native_fb, g_native_dirty, g_native_w, g_native_h, g_native.w == 0, &n)) {
-        // (the renderer fingerprints the lines itself: no whole-frame fingerprint first; its time counts as the
-        // check's, and the conversion of the lines that changed with it)
-        const int64_t t1 = esp_timer_get_time();
-        g_stats.hash_us += t1 - now;
-        if (n.changed) {
-          show_native(n);
-          g_stats.refresh_us += esp_timer_get_time() - t1;
-        } else {
-          ++g_stats.skipped;
-        }
-        last_hash = 0;
-      } else {
-        const uint32_t hash = t386_vga_frame_hash(g_pc->vga);
-        const int64_t t1 = esp_timer_get_time();
-        g_stats.hash_us += t1 - now;
-        if (hash != last_hash) {   // only when the picture changed
-          last_hash = hash;
-          if (g_native.w) {   // from a native picture to tiny386's: all of it again (it covers the margins)
-            g_native.w = 0;
-            g_bands_valid = false;
-          }
-          t386_vga_snapshot(g_pc->vga, g_vga_shadow, g_vga_shadow_size);
-          vga_refresh(g_pc->vga, redraw, nullptr, g_pc->full_update != 0);
-          if (g_pc->full_update == 2) g_pc->full_update = 0;
-          g_stats.refresh_us += esp_timer_get_time() - t1;
-        } else {
-          ++g_stats.skipped;
-        }
-      }
+      refresh(now);
     }
     vTaskDelay(1);
   }

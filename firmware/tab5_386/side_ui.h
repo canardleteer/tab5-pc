@@ -6,7 +6,7 @@
 //             port, pc->shutdown_state 8). Stopped from the web page (g_pc_stopped), a tap restarts the Tab5.
 //             (Without the side panels a tap anywhere turns an off PC on.)
 //   reset     held SIDE_HOLD_MS: a cold start (as the settings panel's Reset PC); a ring fills around the icon
-//   pause     a tap: paused (the backlight dimmed, no sound), a tap again: on
+//   pause     a tap: paused (the picture dimmed and still, no sound), a tap again: on
 //   setup     a tap: the settings panel
 //   lights    power (green on, amber paused, dim green off), disk (amber: the PC's disk used lately; dim when not),
 //             the battery (grey; red at 15% or less)
@@ -373,11 +373,12 @@ static void side_cancel() {
 }
 
 // From the display task, every round, the settings panel open or not: the sound (silent while the PC is off or
-// paused) and the backlight (dimmed while paused, but not under the settings panel)
+// paused) and the backlight (the brightness setting; up to 1.4.0 a quarter of it while paused: the picture alone
+// is dimmed now, display_task)
 static void side_state_poll() {
   const bool on = !g_pc_off && !g_pc_stopped;
   g_audio_quiet = !on || g_user_pause || g_disk.drive >= 0;
-  const uint8_t bri = g_user_pause && on && !g_panel_open ? max(8, g_brightness / 4) : g_brightness;
+  const uint8_t bri = g_brightness;
   if (bri != g_side_bri || g_brightness != g_side_bri_seen) {
     g_side_bri = bri;
     g_side_bri_seen = g_brightness;

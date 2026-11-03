@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Paused, the PC's picture is dimmed (each colour halved) and left as it was, a text mode's cursor no longer
+  blinking; the backlight stays at the brightness setting (it was a quarter of it, the side panels included). The
+  picture comes back in full when the PC goes on.
+
 ## 1.4.0 (2026-11-02)
 
 A CD-ROM tray on the side panel (the disc changes while the PC runs), and fixes: the keyboard and mouse after RESET,
