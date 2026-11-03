@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A PC reset (a reboot, the RESET button) resets the keyboard controller, the keyboard and the mouse too, as a real
+  board's reset does. After RESET, a mouse moved while Linux started left it with no keyboard and no mouse: the mouse
+  was still reporting from before the reset, its data piled up, and Linux, finding more than 16 bytes waiting, took
+  the controller for absent ("i8042: No controller found") (vendor/patches/0022).
 - A CD-ROM tray on the right side panel, between the lights and the battery: the disc's name; a tap opens a dialog
   with the `.iso` files at the card's root and "No disc", **Insert** / **Eject**. The disc changes while the PC runs
   (the PC is told the medium changed, as by a real drive) and is saved in the machine's settings file (its `cdX`
