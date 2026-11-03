@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.4.0 (2026-11-02)
+
+A CD-ROM tray on the side panel (the disc changes while the PC runs), and fixes: the keyboard and mouse after RESET,
+a DOS extender's real-mode calls, the DMA controller's decrement mode, serial checks for the speaker. The firmware
+image with its notices and corresponding source, as for 1.3.0.
 
 - A PC reset (a reboot, the RESET button) resets the keyboard controller, the keyboard and the mouse too, as a real
   board's reset does. After RESET, a mouse moved while Linux started left it with no keyboard and no mouse: the mouse
