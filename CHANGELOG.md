@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.4.1 (2026-11-02)
+
+PAUSE dims the PC's picture instead of the backlight. The firmware image with its notices and corresponding source,
+as for 1.4.0.
 
 - Paused, the PC's picture is dimmed (each colour halved) and left as it was, a text mode's cursor no longer
   blinking; the backlight stays at the brightness setting (it was a quarter of it, the side panels included). The
