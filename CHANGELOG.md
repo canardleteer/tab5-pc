@@ -3,10 +3,10 @@
 ## Unreleased
 
 - The emulated CPU's translator finds the code of indirect jumps (returns, jumps and calls through a register or
-  memory) more often without a trip through its dispatcher: its jump cache holds two entries per set, and the
-  address's high bits are folded in before the hash. Linux programs that make many such jumps run faster: the
-  lynx web browser lays out a large page ~7% sooner (18.2 -> 16.9 s for a 424 KB article). Timings under DOS are
-  unchanged. 16 KB more internal RAM.
+  memory) more often without a trip through its dispatcher: its jump cache, in the same 16 KB, holds two entries per
+  set, and the address's high bits are folded in before the hash. Linux programs that make many such jumps run
+  faster: the lynx web browser lays out a large page ~4.5% sooner (18.2 -> 17.4 s for a 424 KB article). Timings
+  under DOS and Wi-Fi transfers are unchanged.
 
 ## 1.4.1 (2026-11-02)
 

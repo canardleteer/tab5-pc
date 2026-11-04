@@ -731,8 +731,10 @@ static inline unsigned jit_hash_of(uword lin) { return (lin ^ (lin >> 14)) & (JI
 // code that run for every line in one slot, each pushing the other out: 34 thousand trips through the dispatcher a
 // second. Then the product's top bits alone, one entry a slot, 1024 of them: lynx parsing a page, with Linux's
 // own, missed ~20 thousand times a second, its three busiest targets in one slot. Two entries a set and the fold:
-// QEMU's trace of that parse, 6.2% of its indirect jumps missing -> 0.2%.)
-#define JIT_IJC_BITS 10   // (sets)
+// QEMU's trace of that parse, 6.2% of its indirect jumps missing -> 0.8% with 512 sets (the 16 KB of before),
+// 0.2% with 1024. But 1024 took 16 KB more internal RAM, and Wi-Fi, which takes what's left when it starts,
+// then moved files ~13% slower.)
+#define JIT_IJC_BITS 9   // (sets)
 #define JIT_IJC (1 << JIT_IJC_BITS)
 #define JIT_IJC_MUL 0x9e3779b1u
 static struct JitIjc { uword lin, cs_base, mode; u32 *code; } jit_ijc[2 * JIT_IJC];
