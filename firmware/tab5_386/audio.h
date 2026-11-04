@@ -117,3 +117,52 @@ static void audio_setup() {
 static void audio_start() {   // once the PC exists
   xTaskCreatePinnedToCore(audio_task, "audio", 4096, nullptr, 4, nullptr, 0);
 }
+
+// Serial "spk restart": the speaker codec (ES8388) set up again, its I2S stream running on: powered down in order
+// (muted, DAC and outputs off, chip off), then reset and configured as M5Unified's Tab5 speaker callback does. A
+// codec left running by a restart of the Tab5 or a flash starts the next time from where it was, and once in a
+// while all sound then crackled until the Tab5 was switched off. (Not M5.Speaker's end() and begin(): begin takes
+// its DMA buffers anew, and with Wi-Fi on there is no such RAM left: no sound until the next start.)
+static void audio_spk_restart() {
+  static constexpr uint8_t ES = 0x10;
+  static constexpr uint8_t setup[][2] = {   // (M5Unified.inl, the Tab5's _speaker_enabled_cb)
+    {0, 0x80}, {0, 0x00}, {0, 0x00}, {0, 0x0E}, {1, 0x00}, {2, 0x0A}, {3, 0xFF}, {4, 0x3C}, {5, 0x00}, {6, 0x00},
+    {7, 0x7C}, {8, 0x00}, {23, 0x18}, {24, 0x00}, {25, 0x20}, {26, 0x00}, {27, 0x00}, {28, 0x08}, {29, 0x00},
+    {38, 0x00}, {39, 0xB8}, {42, 0xB8}, {43, 0x08}, {45, 0x00}, {46, 0x21}, {47, 0x21}, {48, 0x21}, {49, 0x21}};
+  xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
+  const bool amp = M5.In_I2C.readRegister8(0x43, 0x05, 400000) & 2;
+  if (amp) audio_amp(false);
+  bool ok = M5.In_I2C.writeRegister8(ES, 25, 0x24, 400000);   // mute (soft ramp)
+  delay(1);
+  ok = M5.In_I2C.writeRegister8(ES, 4, 0xC0, 400000) && ok;   // DAC and outputs off
+  ok = M5.In_I2C.writeRegister8(ES, 2, 0xFF, 400000) && ok;   // chip off
+  delay(5);
+  for (auto& r : setup) ok = M5.In_I2C.writeRegister8(ES, r[0], r[1], 400000) && ok;
+  // the state machines reset and started (CHIPPOWER: F0, then as set): at the start the codec is set up before its
+  // clocks run, which starts them; set up while they run it stayed silent until this
+  ok = M5.In_I2C.writeRegister8(ES, 2, 0xF0, 400000) && ok;
+  delay(1);
+  ok = M5.In_I2C.writeRegister8(ES, 2, 0x0A, 400000) && ok;
+  if (amp) audio_amp(true);
+  xSemaphoreGive(g_i2c_lock);
+  Serial.printf("speaker: codec %s\n", ok ? "set up again" : "didn't answer on I2C");
+}
+
+// serial "codec": the ES8388's registers (0-52, as hex), and the amplifier's bit (PI4IOE5V6408 0x43 register 5 bit 1)
+static void audio_codec_report() {
+  uint8_t r[53] = {};
+  xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
+  bool ok = true;
+  for (int i = 0; i < 53 && ok; ++i) ok = M5.In_I2C.readRegister(0x10, i, &r[i], 1, 400000);
+  const uint8_t io = M5.In_I2C.readRegister8(0x43, 0x05, 400000);
+  xSemaphoreGive(g_i2c_lock);
+  if (!ok) { Serial.println("codec: no answer on I2C"); return; }
+  for (int i = 0; i < 53; i += 16) {
+    char line[80];
+    int n = snprintf(line, sizeof line, "codec %02d:", i);
+    for (int k = i; k < i + 16 && k < 53; ++k) n += snprintf(line + n, sizeof line - n, " %02x", r[k]);
+    Serial.println(line);
+  }
+  Serial.printf("codec: amplifier %s, speaker %s, sound %s, volume %u\n", io & 2 ? "on" : "off",
+                g_spk_started ? "started" : "not started", g_astats.on ? "playing" : "idle", g_volume);
+}

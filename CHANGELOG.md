@@ -7,6 +7,11 @@
   set, and the address's high bits are folded in before the hash. Linux programs that make many such jumps run
   faster: the lynx web browser lays out a large page ~4.5% sooner (18.2 -> 17.4 s for a 424 KB article). Timings
   under DOS and Wi-Fi transfers are unchanged.
+- Serial `codec`: the speaker codec's (ES8388) registers and the amplifier's state; serial `spk restart`: the codec
+  set up again (an orderly power-down, then reset and configured as at the start, its state machines started
+  again), the PC and its sound running on. For the rare starts after which all sound crackles (a codec left running
+  by a restart or a flash starts again from where it was): `codec`, then `spk restart`. Serial `i2c <addr> <reg>
+  [<value>]` (hex): read or write a register on the internal I2C bus.
 
 ## 1.4.1 (2026-11-02)
 

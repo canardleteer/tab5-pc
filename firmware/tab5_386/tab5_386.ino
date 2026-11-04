@@ -716,6 +716,20 @@ static void handle_serial() {
     } else if (line.startsWith("raw ")) {   // raw 0|1: disk images as raw card sectors (from the next start)
       g_prefs.putBool("raw", line.substring(4).toInt() != 0);
       Serial.println("raw access: from the next start");
+    } else if (line.startsWith("i2c ")) {   // i2c <addr> <reg> [<value>]: read or write a register on the internal I2C
+      unsigned a = 0, r = 0, v = 0;   // bus (codec 10, IO expanders 43/44, touch...), hex
+      const int n = sscanf(line.c_str() + 4, "%x %x %x", &a, &r, &v);
+      if (n >= 2) {
+        xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
+        const bool ok = n == 3 ? M5.In_I2C.writeRegister8(a, r, v, 400000) : true;
+        const uint8_t now = M5.In_I2C.readRegister8(a, r, 400000);
+        xSemaphoreGive(g_i2c_lock);
+        Serial.printf("i2c %02x %02x: %s%02x\n", a, r, ok ? "" : "(write failed) ", now);
+      }
+    } else if (line == "codec") {   // the speaker codec's registers (audio.h)
+      audio_codec_report();
+    } else if (line == "spk restart") {   // the speaker codec set up again, its sound running on (audio.h)
+      audio_spk_restart();
     } else if (line == "beep") {   // a speaker check without the PC: the amplifier on, an 880 Hz tone on another channel
       xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
       Serial.printf("speaker started %d, volume %u (M5 %u)\n", g_spk_started, g_volume, M5.Speaker.getVolume());
