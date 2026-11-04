@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The emulated CPU's translator finds the code of indirect jumps (returns, jumps and calls through a register or
+  memory) more often without a trip through its dispatcher: its jump cache holds two entries per set, and the
+  address's high bits are folded in before the hash. Linux programs that make many such jumps run faster: the
+  lynx web browser lays out a large page ~7% sooner (18.2 -> 16.9 s for a 424 KB article). Timings under DOS are
+  unchanged. 16 KB more internal RAM.
+
 ## 1.4.1 (2026-11-02)
 
 PAUSE dims the PC's picture instead of the backlight. The firmware image with its notices and corresponding source,

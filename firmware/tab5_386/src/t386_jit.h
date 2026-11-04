@@ -725,14 +725,18 @@ static inline bool pm_io(uword p) { return (t386_pagemap[p] & PM_IO) == PM_IO; }
 static inline unsigned jit_hash_of(uword lin) { return (lin ^ (lin >> 14)) & (JIT_HASH - 1); }
 
 // Where indirect jumps (RET, JMP and CALL through a register or memory) find their block from translated code:
-// slot by linear address; filled by the dispatcher; an invalidated block's slot is emptied. The slot: the top bits of
-// the address times 2^32 / phi (lin ^ lin >> 10, before, put pairs of Linux's console code that run for every line
-// in the same slot, each pushing the other out: 34 thousand trips through the dispatcher a second).
-#define JIT_IJC_BITS 10
+// sets of two entries by linear address, the newer first; filled by the dispatcher (the entry there before goes
+// second, the second one out); an invalidated block's entry is emptied. The set: the top bits of the address, its
+// high bits folded into its low ones, times 2^32 / phi. (lin ^ lin >> 10, at first, put pairs of Linux's console
+// code that run for every line in one slot, each pushing the other out: 34 thousand trips through the dispatcher a
+// second. Then the product's top bits alone, one entry a slot, 1024 of them: lynx parsing a page, with Linux's
+// own, missed ~20 thousand times a second, its three busiest targets in one slot. Two entries a set and the fold:
+// QEMU's trace of that parse, 6.2% of its indirect jumps missing -> 0.2%.)
+#define JIT_IJC_BITS 10   // (sets)
 #define JIT_IJC (1 << JIT_IJC_BITS)
 #define JIT_IJC_MUL 0x9e3779b1u
-static struct JitIjc { uword lin, cs_base, mode; u32 *code; } jit_ijc[JIT_IJC];
-static inline unsigned jit_ijc_hash(uword lin) { return (u32) (lin * JIT_IJC_MUL) >> (32 - JIT_IJC_BITS); }
+static struct JitIjc { uword lin, cs_base, mode; u32 *code; } jit_ijc[2 * JIT_IJC];
+static inline unsigned jit_ijc_hash(uword lin) { return (u32) ((lin ^ lin >> 15) * JIT_IJC_MUL) >> (32 - JIT_IJC_BITS); }
 
 // The TLB was flushed: the indirect jump cache's entries for paged code may have another mapping now (all go)
 static void jit_ijc_unmap(void)
@@ -1199,8 +1203,9 @@ static void jit_invalidate(JitBlock *b)
 	} else {
 		jit_unlink_into(b);
 	}
-	struct JitIjc *ij = &jit_ijc[jit_ijc_hash(b->lin)];
-	if (ij->code == b->code) ij->lin = -1;
+	struct JitIjc *ij = &jit_ijc[2 * jit_ijc_hash(b->lin)];
+	for (int k = 0; k < 2; k++)
+		if (ij[k].code == b->code) ij[k].lin = -1;
 	JitBlock **pp = &jit_hash[jit_hash_of(b->lin)];
 	while (*pp && *pp != b) pp = &(*pp)->hnext;
 	if (*pp) *pp = b->hnext;
@@ -3100,23 +3105,26 @@ static void jit_make_shared(void)
 	u32 t = (u32) (uintptr_t) t386_jit_exit;
 	s32 lo = (s32) (t << 20) >> 20;
 	jit_r_ijc = jp;
-	e_li(T1, JIT_IJC_MUL);   // (jit_ijc_hash, times 16)
-	e_mul(T1, T1, T0);
+	e_srli(T2, T0, 15);   // (jit_ijc_hash, times 32: the set)
+	e_xor(T2, T2, T0);
+	e_li(T1, JIT_IJC_MUL);
+	e_mul(T1, T1, T2);
 	e_srli(T1, T1, 32 - JIT_IJC_BITS);
-	e_slli(T1, T1, 4);
+	e_slli(T1, T1, 5);
 	e_li(T2, (u32) (uintptr_t) jit_ijc);
 	e_add(T1, T1, T2);
-	e_lw(T2, T1, 0);
-	u32 *m1 = e_branch(BNE, T2, T0);
-	e_lw(T2, T1, 4);
-	u32 *m2 = e_branch(BNE, T2, T6);
-	e_lw(T2, T1, 8);
-	u32 *m3 = e_branch(BNE, T2, A3);
-	e_lw(T2, T1, 12);
-	e_jalr(X0, T2, 0);
-	j_bind(m1, jp);
-	j_bind(m2, jp);
-	j_bind(m3, jp);
+	u32 *miss[6];
+	for (int k = 0; k < 2; k++) {   // its two entries
+		e_lw(T2, T1, 16 * k);
+		miss[3 * k] = e_branch(BNE, T2, T0);
+		e_lw(T2, T1, 16 * k + 4);
+		miss[3 * k + 1] = e_branch(BNE, T2, T6);
+		e_lw(T2, T1, 16 * k + 8);
+		miss[3 * k + 2] = e_branch(BNE, T2, A3);
+		e_lw(T2, T1, 16 * k + 12);
+		e_jalr(X0, T2, 0);
+		for (int m = 3 * k; m < 3 * k + 3; m++) j_bind(miss[m], jp);
+	}
 	e_li(A0, EXIT_JUMP);
 	e_lui(T6, t - (u32) lo);
 	e_jalr(X0, T6, lo);
@@ -6227,12 +6235,13 @@ static bool jit_exec_in(CPUI386 *cpu, int stepcount)
 			}
 		}
 		// (with paging, the entry holds while the TLB does, for the privilege level's TLB: jt_ijc_exit)
-		if (b) {
-			struct JitIjc *ij = &jit_ijc[jit_ijc_hash(lin)];
-			ij->lin = lin;
-			ij->cs_base = mode & JM_PAGED ? cs_base ^ (uword) (uintptr_t) ftlb : cs_base;
-			ij->mode = mode;
-			ij->code = b->code;
+		if (b) {   // (the newer entry of its set; the one there goes second, unless it's this one's)
+			struct JitIjc *ij = &jit_ijc[2 * jit_ijc_hash(lin)];
+			if (ij[0].lin != lin) ij[1] = ij[0];
+			ij[0].lin = lin;
+			ij[0].cs_base = mode & JM_PAGED ? cs_base ^ (uword) (uintptr_t) ftlb : cs_base;
+			ij[0].mode = mode;
+			ij[0].code = b->code;
 		}
 		JIT_TR(b ? TR_BLOCK : cold ? TR_COLD : TR_INTERP, lin, cpu->seg[SEG_CS].sel << 16 | (eip & 0xffff),
 		       b ? (u32) (uintptr_t) b->code : cpu->gprx[4].r32);
