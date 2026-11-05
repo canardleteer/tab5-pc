@@ -5,7 +5,7 @@ PS/2 keyboard and mouse, a Sound Blaster 16, AdLib and PC speaker, IDE hard disk
 SeaBIOS. It runs DOS and Linux. On an empty SD card it downloads and installs FreeDOS or
 [Sprig Linux](https://github.com/yejun/sprig-linux) by itself; files are copied to it over Wi-Fi from a browser.
 
-![FreeDOS's first start on the Tab5, between the side panels](docs/images/first-boot.png)
+![Sprig Linux starting on the Tab5, between the side panels](docs/images/linux-boot.png)
 
 This is an independent project, not affiliated with or endorsed by M5Stack. It is provided as is (see `LICENSE`).
 
@@ -67,13 +67,11 @@ v3.x for later ones: `CHIP=postv3 tools/build.sh upload`. A build for the wrong 
    disk), your keyboard, **Plain DOS system**, and **Yes** to install. (The questions that default to No need Up,
    then Enter.)
 
-   ![FreeDOS's installer](docs/images/fd-language.png)
-
 3. Copying the packages takes about 20 minutes. When the installer asks to reboot, say yes: the Tab5 sets the
    machine up to start from its `C.IMG` alone, removes the installer's files from the card, and adjusts `C:\FDAUTO.BAT` for this
    PC (its CD-ROM driver; the Sound Blaster's `BLASTER` setting). FreeDOS then starts at the `C:\>` prompt.
 
-   ![Installing](docs/images/fd-progress.png)
+   ![FreeDOS installing, between the side panels](docs/images/fd-progress.png)
 
 **Other ways to start:**
 
@@ -101,9 +99,7 @@ PC running, then into the new machine.
   PC (about 10 MB downloaded, 140 MB on the card), every file checked against the release's checksums. It starts
   with a graphics console (800 x 600); the machine's settings file says how to use the text console instead.
   Installing Linux again with the same name updates it: its kernel and loader are replaced, its disk (`root.img`,
-  your files) is kept.
-
-  ![Sprig Linux starting on the Tab5, between the side panels](docs/images/linux-boot.png)
+  your files) is kept. (Its start is the picture at the top of this page.)
 
 - **ISO**: a PC that starts from an installer CD. Copy the CD's `.iso` to the root of the card first (the web page's
   SD card tab), then choose it in the dialog (the machine's name is suggested from it). The new machine gets an empty
@@ -116,8 +112,6 @@ install fails, the screen says why, and a tap goes back to the machine there was
 `machine <file>`, `install dos <name>`, `install linux <name>`, `install iso <name> [<file>.iso]`.
 
 ## Using it
-
-![FreeDOS's help viewer](docs/images/help.png)
 
 **The Tab5 Keyboard.** Aa, Ctrl and Alt are the PC's Shift, Ctrl and Alt. Sym is a layer (never sent to the PC):
 
