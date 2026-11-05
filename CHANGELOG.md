@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 (2026-11-05)
+
+Screenshots from a camera on the side panel, the Tab5's clock, and faster Linux programs. The firmware image with
+its notices and corresponding source, as for 1.4.1.
 
 - **Screenshots**: a camera on the right side panel (a retro camera drawn in a window between the CD-ROM tray and
   the battery; the right panel's windows now line up with the left panel's keys). A tap saves the PC's picture on

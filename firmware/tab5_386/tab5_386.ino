@@ -70,7 +70,7 @@ void t386_lfb_hooks(void);
 extern int t386_ne2000_irq;
 }
 
-static constexpr const char* FIRMWARE_VERSION = "1.4.1";
+static constexpr const char* FIRMWARE_VERSION = "1.5.0";
 static constexpr int EMU_W = 720, EMU_H = 480;     // tiny386's frame buffer (VGA output, centred in it)
 static constexpr int SCR_W = 1280, SCR_H = 720;    // landscape
 static constexpr int FB_W = 720, FB_H = 1280;      // the panel's native portrait frame buffer
