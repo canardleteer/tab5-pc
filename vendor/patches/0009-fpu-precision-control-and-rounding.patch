@@ -2,9 +2,11 @@ The x87 precision control (single precision rounds results to 24 bits, in the ro
 exponent range) and FST m32 in the rounding mode: programs that set single precision with chop or ceil modes.
 Checked against QEMU. NaN results as the x87 makes them (the host's may differ: RISC-V's).
 
+diff --git a/fpu.c b/fpu.c
+index a7dbf04..fd0ecc2 100644
 --- a/fpu.c
 +++ b/fpu.c
-@@ -324,9 +324,58 @@
+@@ -378,9 +378,58 @@ static bool fploadbcd(void *cpu, int seg, uword addr, double *res)
  	return true;
  }
  
@@ -65,7 +67,7 @@ Checked against QEMU. NaN results as the x87 makes them (the host's may differ: 
  	u32 v = u.i;
  	if (!cpu_store32(cpu, seg, addr, v))
  		return false;
-@@ -474,7 +523,7 @@
+@@ -528,7 +577,7 @@ static void fparith(FPU *fpu, int group, unsigned int d, double a, double b)
  	if (group == 3) {
  		fppop(fpu);
  	} else if (group != 2) {
@@ -74,7 +76,7 @@ Checked against QEMU. NaN results as the x87 makes them (the host's may differ: 
  	}
  }
  
-@@ -505,14 +554,14 @@
+@@ -559,14 +608,14 @@ bool fpu_exec2(FPU *fpu, void *cpu, bool opsz16, int op, int group, int seg, uwo
  			return false;
  		case 2: { // FST float32
  			a = fpget(fpu, 0);
@@ -91,7 +93,7 @@ Checked against QEMU. NaN results as the x87 makes them (the host's may differ: 
  				return false;
  			}
  			fppop(fpu);
-@@ -1030,7 +1079,7 @@
+@@ -1088,7 +1137,7 @@ bool fpu_exec1(FPU *fpu, void *cpu, int op, int group, unsigned int i)
  				fppop(fpu);
  				break;
  			case 2: // FSQRT

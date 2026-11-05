@@ -3,9 +3,14 @@ as a board's reset line and its BIOS do. They kept their state: a mouse still re
 system before filled its queue while the next one started, and Linux, finding more than 16 bytes
 waiting, took the controller for absent ("i8042: No controller found"): no keyboard, no mouse.
 
+On tiny386 since 7fd4d05 and 2c1205c the keyboard's scancode translation state (a break code's F0 half) and the
+mouse's packet left over for lack of room go back to nothing too.
+
+diff --git a/i8042.c b/i8042.c
+index 754ad40..5b59bbd 100644
 --- a/i8042.c
 +++ b/i8042.c
-@@ -935,3 +935,58 @@ PS2MouseState *ps2_mouse_init(void (*update_irq)(void *, int), void *update_arg)
+@@ -1087,3 +1087,60 @@ PS2MouseState *ps2_mouse_init(void (*update_irq)(void *, int), void *update_arg)
      ps2_reset(&s->common);
      return s;
  }
@@ -46,6 +51,7 @@ waiting, took the controller for absent ("i8042: No controller found"): no keybo
 +#endif
 +    k->scan_enabled = 0;
 +    k->translate = 0;
++    k->translate_state = 0;
 +
 +    ps2_queue_clear(&m->common);
 +    m->mouse_status = 0;
@@ -58,12 +64,15 @@ waiting, took the controller for absent ("i8042: No controller found"): no keybo
 +    m->mouse_dy = 0;
 +    m->mouse_dz = 0;
 +    m->mouse_buttons = 0;
++    m->mouse_pending = 0;
 +
 +    kbd_reset(s);
 +    s->write_cmd = 0;
 +    s->pending = 0;
 +    kbd_update_irq(s);
 +}
+diff --git a/i8042.h b/i8042.h
+index 7282d45..168bfaa 100644
 --- a/i8042.h
 +++ b/i8042.h
 @@ -17,6 +17,7 @@ void ps2_mouse_event(PS2MouseState *s,
@@ -74,9 +83,11 @@ waiting, took the controller for absent ("i8042: No controller found"): no keybo
  
  uint32_t kbd_read_status(void *opaque, uint32_t addr);
  void kbd_write_command(void *opaque, uint32_t addr, uint32_t val);
+diff --git a/pc.c b/pc.c
+index 5222c20..699738b 100644
 --- a/pc.c
 +++ b/pc.c
-@@ -599,6 +599,7 @@
+@@ -599,6 +599,7 @@ void pc_step(PC *pc)
  {
  	if (pc->reset_request) {
  		pc->reset_request = 0;

@@ -1,6 +1,11 @@
 A hook when tiny386 empties its TLB, for the fast path's own: a task switch reloads CR3 with the same value
 as often as not (CWSDPMI, made for the 386, flushes the TLB that way), and that went unnoticed.
 
+Beside tiny386's own tlb_gen (counted there for its fast/ path since 2d2e124): this firmware's fast path and
+translator have their own TLBs and use the hook.
+
+diff --git a/i386.c b/i386.c
+index a3207c3..580a1c6 100644
 --- a/i386.c
 +++ b/i386.c
 @@ -21,6 +21,11 @@
@@ -15,11 +20,11 @@ as often as not (CWSDPMI, made for the 386, flushes the TLB that way), and that 
  #define I386_OPT1
  #ifndef __wasm__
  #define I386_OPT2
-@@ -551,6 +556,7 @@
+@@ -555,6 +560,7 @@ static unsigned tlb_gen; /* counts TLB clears (fast/fast.h keeps a TLB of its ow
  
  static void tlb_clear(CPUI386 *cpu)
  {
 +	T386_TLB_CLEARED();
+ 	tlb_gen++;
  	for (int i = 0; i < tlb_size; i++) {
  		cpu->tlb.tab[i].lpgno = -1;
- 	}

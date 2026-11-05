@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- tiny386 updated (to 2c1205c). Our fixes for AAM with 0, real-mode interrupts' stack, the 9-dot text's ninth column
+  and the Sound Blaster's DMA are now tiny386's own (five patches fewer). New from tiny386: text mode drawn as a VGA
+  shows it (blinking characters, the cursor's shape), the keyboard's scancode set 2, PS/2 mouse packets queued whole,
+  and page protection that treats only CPL 3 as user level. After a reset the keyboard controller also forgets a
+  half-received key code and a mouse packet waiting for room.
+- Blinking text (attribute bit 7) blinks, at half the cursor's rate.
+- Timings measured against 1.5.0 on the Tab5 show no change beyond run-to-run noise (~1-3%): two games' timed
+  demos, a graphical desktop's start and two of its programs, Sprig Linux's start and a file-listing workload.
+
 ## 1.5.0 (2026-11-05)
 
 Screenshots from a camera on the side panel, the Tab5's clock, and faster Linux programs. The firmware image with

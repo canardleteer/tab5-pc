@@ -38,6 +38,14 @@ uint32_t t386_vga_frame_hash(VGAState* s) {
         uint32_t phase = s->cursor_visible_phase;
         h = t386_mix(h, &phase, sizeof(phase));
     }
+    // Characters with attribute bit 7 blink at half the cursor's rate when AR10h bit 3 says so: vga.c's
+    // blink_visible, which its timer (kept from firing above) would flip, set here too. (Its flips fall on the
+    // cursor's: no more redraws at a DOS prompt; with the cursor hidden, these redraws alone.)
+    s->blink_visible = !((now / 533333) & 1);
+    if (text && (s->ar[0x10] & 0x08)) {
+        uint32_t blink = s->blink_visible;
+        h = t386_mix(h, &blink, sizeof(blink));
+    }
     // the video memory on show, the way vga_text_refresh / vga_graphic_refresh walk it
     size_t start, len;
     if (vbe_enabled(s)) {

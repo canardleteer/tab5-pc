@@ -5,9 +5,11 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
 - The UNIT ATTENTION after a change is reported once, then commands go on: it had held every command
   until a REQUEST SENSE, which FreeDOS's UDVD2 never sends (the drive stayed "not ready" for good).
 
+diff --git a/ide.c b/ide.c
+index 4bbbee6..d06fd67 100644
 --- a/ide.c
 +++ b/ide.c
-@@ -353,6 +353,7 @@
+@@ -353,6 +353,7 @@ struct IDEState {
      uint8_t sense_key;
      uint8_t asc;
      uint8_t cdrom_changed;
@@ -15,7 +17,7 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
      int packet_transfer_size;
      int elementary_transfer_size;
      int io_buffer_index;
-@@ -1126,6 +1127,10 @@
+@@ -1126,6 +1127,10 @@ static void ide_atapi_cmd_read(IDEState *s, int lba, int nb_sectors,
      printf("read %s: LBA=%d nb_sectors=%d\n", 0 ? "dma" : "pio",
             lba, nb_sectors);
  #endif
@@ -26,7 +28,7 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
      ide_atapi_cmd_read_pio(s, lba, nb_sectors, sector_size);
  }
  
-@@ -1164,16 +1169,19 @@
+@@ -1164,16 +1169,19 @@ static void ide_atapi_cmd(IDEState *s)
      }
  #endif
      /* If there's a UNIT_ATTENTION condition pending, only
@@ -49,7 +51,7 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
              ide_atapi_cmd_ok(s);
          } else {
              s->cdrom_changed = 0;
-@@ -2319,9 +2327,29 @@
+@@ -2319,9 +2327,29 @@ int ide_attach(IDEIFState *s, int drive, const char *filename)
      return 0;
  }
  
@@ -79,7 +81,7 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
  #ifdef IDE_ENABLE_CISO
      BlockDevice *bs = block_device_init_ciso(filename);
  #else
-@@ -2331,25 +2359,34 @@
+@@ -2331,25 +2359,34 @@ int ide_attach_cd(IDEIFState *s, int drive, const char *filename)
      return 0;
  }
  
@@ -118,7 +120,7 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
      }
  
      int64_t file_size;
-@@ -2359,7 +2396,7 @@
+@@ -2359,7 +2396,7 @@ static void block_device_reinit(BlockDevice *bs, const char *filename)
      f = fopen(filename, mode_str);
      if (!f) {
          fprintf(stderr, "block_device_reinit: open failed: %s\n", filename);
@@ -127,7 +129,7 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
      }
  
      fseeko(f, 0, SEEK_END);
-@@ -2370,18 +2407,21 @@
+@@ -2370,18 +2407,21 @@ static void block_device_reinit(BlockDevice *bs, const char *filename)
          fclose(bf->f);
      bf->f = f;
      bf->start_offset = 0;
@@ -157,9 +159,11 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
  }
  
  PCIDevice *piix3_ide_init(PCIBus *pci_bus, int devfn)
+diff --git a/ide.h b/ide.h
+index 25ecb87..360ca39 100644
 --- a/ide.h
 +++ b/ide.h
-@@ -31,7 +31,7 @@
+@@ -31,7 +31,7 @@ typedef struct IDEIFState IDEIFState;
  IDEIFState *ide_allocate(int irq, void *pic, void (*set_irq)(void *pic, int irq, int level));
  int ide_attach(IDEIFState *s, int drive, const char *filename);
  int ide_attach_cd(IDEIFState *s, int drive, const char *filename);
@@ -168,9 +172,11 @@ CD-ROM drives: a disc changed while the PC runs, as a real drive.
  
  void ide_data_writew(void *opaque, uint32_t val);
  uint32_t ide_data_readw(void *opaque);
+diff --git a/pc.c b/pc.c
+index fe1f867..5222c20 100644
 --- a/pc.c
 +++ b/pc.c
-@@ -795,8 +795,8 @@
+@@ -795,8 +795,8 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void *redraw_data,
  	pc->ide2 = ide_allocate(15, pc->pic, set_irq);
  	const char **disks = conf->disks;
  	for (int i = 0; i < 4; i++) {

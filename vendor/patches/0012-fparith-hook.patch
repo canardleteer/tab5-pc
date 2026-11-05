@@ -1,9 +1,11 @@
 A hook in fparith for a quicker way to the same result: the Tab5 firmware does single precision (the x87's
 precision control 00) with the P4's single-precision FPU, in the x87's rounding mode.
 
+diff --git a/fpu.c b/fpu.c
+index fd0ecc2..3e89ce7 100644
 --- a/fpu.c
 +++ b/fpu.c
-@@ -484,6 +484,10 @@
+@@ -538,6 +538,10 @@ enum {
  static void fparith(FPU *fpu, int group, unsigned int d, double a, double b)
  {
  	double c;

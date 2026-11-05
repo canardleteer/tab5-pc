@@ -3,10 +3,10 @@ while a refresh running alongside (on another core) may be drawing into it. (Cle
 size is upstream's since 9eca597.)
 
 diff --git a/vga.c b/vga.c
-index 9a02b71..b091da6 100644
+index c739fed..1dbbc22 100644
 --- a/vga.c
 +++ b/vga.c
-@@ -723,7 +723,8 @@ static void vbe_update_vgaregs(VGAState *s)
+@@ -783,7 +783,8 @@ static void vbe_update_vgaregs(VGAState *s)
      s->gr[VGA_GFX_MODE] = (s->gr[VGA_GFX_MODE] & ~0x60) |
          (shift_control << 5);
      s->cr[VGA_CRTC_MAX_SCAN] &= ~0x9f; /* no double scan */

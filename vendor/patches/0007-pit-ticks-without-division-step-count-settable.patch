@@ -47,7 +47,7 @@ index 4444556..3c7297c 100644
  	case 2:
  	case 3:
 diff --git a/pc.c b/pc.c
-index f4142bd..7c757f5 100644
+index 9fe093d..fe1f867 100644
 --- a/pc.c
 +++ b/pc.c
 @@ -135,7 +135,9 @@ static void cpu_enable_fpu(CPUABS *cpu)

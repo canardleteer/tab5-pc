@@ -1,7 +1,8 @@
-diff --git i/i386.c w/i386.c
---- i/i386.c
-+++ w/i386.c
-@@ -770,8 +770,37 @@
+diff --git a/i386.c b/i386.c
+index 674080c..a3207c3 100644
+--- a/i386.c
++++ b/i386.c
+@@ -775,8 +775,37 @@ static u8 IRAM_ATTR load8(CPUI386 *cpu, OptAddr *res)
  	return pload8(cpu, addr);
  }
  
@@ -39,7 +40,7 @@ diff --git i/i386.c w/i386.c
  	if (in_iomem(res->addr1) && cpu->cb.iomem_read16)
  		return cpu->cb.iomem_read16(cpu->cb.iomem, res->addr1);
  	if (unlikely(res->addr1 >= cpu->phys_mem_size)) {
-@@ -785,6 +814,8 @@
+@@ -790,6 +819,8 @@ static u16 IRAM_ATTR load16(CPUI386 *cpu, OptAddr *res)
  
  static u32 IRAM_ATTR load32(CPUI386 *cpu, OptAddr *res)
  {
@@ -48,7 +49,7 @@ diff --git i/i386.c w/i386.c
  	if (in_iomem(res->addr1) && cpu->cb.iomem_read32)
  		return cpu->cb.iomem_read32(cpu->cb.iomem, res->addr1);
  	if (unlikely(res->addr1 >= cpu->phys_mem_size)) {
-@@ -823,6 +854,10 @@
+@@ -828,6 +859,10 @@ static void IRAM_ATTR store8(CPUI386 *cpu, OptAddr *res, u8 val)
  
  static void IRAM_ATTR store16(CPUI386 *cpu, OptAddr *res, u16 val)
  {
@@ -59,7 +60,7 @@ diff --git i/i386.c w/i386.c
  	if (in_iomem(res->addr1) && cpu->cb.iomem_write16) {
  		cpu->cb.iomem_write16(cpu->cb.iomem, res->addr1, val);
  		return;
-@@ -843,6 +878,10 @@
+@@ -848,6 +883,10 @@ static void IRAM_ATTR store16(CPUI386 *cpu, OptAddr *res, u16 val)
  
  static void IRAM_ATTR store32(CPUI386 *cpu, OptAddr *res, u32 val)
  {
