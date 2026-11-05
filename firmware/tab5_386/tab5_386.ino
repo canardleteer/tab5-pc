@@ -883,6 +883,7 @@ static void display_task(void*) {
     touch_poll();
     handle_serial();
     wifi_poll();
+    clock_poll();
     disk_poll();
     type_poll();
     const int64_t now = esp_timer_get_time();

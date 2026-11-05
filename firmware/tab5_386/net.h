@@ -8,6 +8,7 @@
 
 enum WifiState { WIFI_DISABLED, WIFI_NONE, WIFI_CONNECTING, WIFI_UP, WIFI_FAILED };
 static WifiState g_wifi = WIFI_DISABLED;
+static void clock_ntp(bool on);   // (clock.h: SNTP while Wi-Fi is up)
 static bool g_wifi_ready = false;           // the WiFi stack (ESP-Hosted, to the C6) has been brought up
 static String g_ssid, g_pass;               // the saved network
 static String g_try_ssid, g_try_pass;       // the network being joined; saved once that works
@@ -73,6 +74,7 @@ static void wifi_enable(bool on) {
     if (!g_ssid.isEmpty()) wifi_start(g_ssid, g_pass);
   } else {
     web_stop();
+    clock_ntp(false);
     WiFi.disconnect(false, false);
     esp_wifi_stop();
     g_wifi = WIFI_DISABLED;
@@ -100,6 +102,7 @@ static void wifi_poll() {
         Serial.printf("wifi: up, http://%s/\n", WiFi.localIP().toString().c_str());
         web_start();
         guest_net_wifi_up();
+        clock_ntp(true);
       } else if (now - g_wifi_t0 > CONNECT_TIMEOUT_MS ||
                  ((st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL) && now - g_wifi_t0 > 4000)) {
         Serial.printf("wifi: could not connect to %s (status %d)\n", g_try_ssid.c_str(), (int)st);

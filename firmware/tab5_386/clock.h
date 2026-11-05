@@ -1,8 +1,11 @@
 // The Tab5's clock: its RTC (kept by its battery, in UTC) sets the system's time at the start: file dates on the
 // card, screenshots' names (screenshot.h), tiny386's CMOS clock (which stays in UTC: it reads gmtime). The time zone,
 // for local dates, is a POSIX TZ string kept in NVS ("tz"; UTC until set). Both are set by the web page from the
-// browser's clock and zone whenever it is opened (web.h's /api/clock, clock_set), or by serial "clock".
+// browser's clock and zone whenever it is opened (web.h's /api/clock, clock_set), or by serial "clock". While Wi-Fi
+// is on (only when the user turns it on: this never does), SNTP keeps the time: at once, then every 3 hours
+// (CONFIG_LWIP_SNTP_UPDATE_DELAY), the RTC written when it is more than 2 s off (clock_poll).
 #pragma once
+#include <esp_sntp.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -73,4 +76,44 @@ static void clock_set(time_t utc, const String& tz) {
     clock_tz();
     Serial.printf("clock: time zone %s, from the web page's browser\n", tz.c_str());
   }
+}
+
+// ---- SNTP, while Wi-Fi is up (net.h)
+
+static volatile bool g_ntp_synced = false;
+static void clock_ntp_cb(struct timeval*) { g_ntp_synced = true; }   // (lwIP's task: the RTC is clock_poll's)
+
+static void clock_ntp(bool on) {   // Wi-Fi up: a sync now, and every 3 hours; Wi-Fi off: none
+  if (esp_sntp_enabled()) esp_sntp_stop();
+  if (!on) return;
+  esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+  esp_sntp_setservername(0, "pool.ntp.org");
+  sntp_set_time_sync_notification_cb(clock_ntp_cb);
+  esp_sntp_init();   // (it sets the system's time itself, not TZ: the zone stays as set)
+}
+
+static time_t clock_utc(int y, int m, int d, int hh, int mm, int ss) {   // a UTC date and time as seconds
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400, yoe = y - era * 400;
+  const int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1, doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return ((time_t)(era * 146097 + doe - 719468) * 86400) + hh * 3600 + mm * 60 + ss;
+}
+
+// From the display task: after an SNTP sync, the RTC brought to the system's time if it is more than 2 s off
+static void clock_poll() {
+  if (!g_ntp_synced) return;
+  g_ntp_synced = false;
+  xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
+  const auto r = M5.Rtc.getDateTime();
+  const time_t now = time(nullptr);
+  const long long off = (long long)clock_utc(r.date.year, r.date.month, r.date.date, r.time.hours, r.time.minutes,
+                                             r.time.seconds) - now;
+  if (llabs(off) > 2) {
+    struct tm u;
+    gmtime_r(&now, &u);
+    M5.Rtc.setDateTime(&u);
+  }
+  xSemaphoreGive(g_i2c_lock);
+  if (llabs(off) > 2) Serial.printf("clock: set from NTP (the RTC was %lld s %s)\n", llabs(off), off < 0 ? "slow" : "fast");
+  else Serial.println("clock: NTP agrees with the RTC");
 }

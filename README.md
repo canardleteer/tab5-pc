@@ -143,7 +143,8 @@ fills around POWER's or RESET's icon while you hold it; a short tap on either do
 day and that day's count (`2026-11-05_001.png`), at the picture's own size (640 x 400 for 80-column text, 320 x 200
 for a 256-colour game, 800 x 600 for Sprig Linux's console ...). The camera's flash lights up, then its light shows
 green for a moment (red: not saved, the card full or missing). The day comes from the Tab5's clock (it keeps UTC),
-in your time zone: opening the Tab5's web page sets both from your browser. Over the serial console, `clock` shows
+in your time zone: opening the Tab5's web page sets both from your browser, and while you have Wi-Fi on, the Tab5 also
+checks the time with an internet time server (pool.ntp.org) every 3 hours. Over the serial console, `clock` shows
 the time, `clock 2026-11-05 18:30:00` sets it (UTC) and `clock tz PST8PDT,M3.2.0,M11.1.0` the time zone, as a POSIX
 TZ string. Serial `shot` takes a screenshot too.
 

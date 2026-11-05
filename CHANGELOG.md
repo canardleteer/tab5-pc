@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- While Wi-Fi is on, the Tab5 checks its clock with pool.ntp.org (SNTP): when Wi-Fi comes up, then every 3 hours;
+  the RTC is written when it is more than 2 s off. Only while the user has Wi-Fi on: nothing turns it on for this.
 - Opening the Tab5's web page sets its clock and time zone from the browser's (screenshots' names, file dates on the
   card): the zone is sent as a POSIX TZ string worked out in the page (the browser's offsets and this year's
   daylight-saving changes), kept in NVS; the clock is written only when it is more than 2 s off. Serial `clock`
