@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Screenshots**: a camera on the right side panel (a retro camera drawn in a window between the CD-ROM tray and
+  the battery; the right panel's windows now line up with the left panel's keys). A tap saves the PC's picture on
+  the card as a PNG in `screenshots/`, named by the day and that day's count (`2026-11-05_001.png`), at the
+  picture's own size, as the PC drew it. The camera's flash lights up, then its light shows green (saved) or red
+  (not saved). Encoded as it is written (no copy of the whole file in
+  memory), in a task beside the PC's: ~0.3 s for 800 x 600. Serial `shot` does the same.
+- The Tab5's clock (its RTC) sets the time at the start: file dates on the card, screenshots' names. Serial
+  `clock` shows it, `clock YYYY-MM-DD HH:MM:SS` sets it (UTC), `clock tz <POSIX TZ>` sets the time zone for local
+  dates (kept). The PC's own clock (CMOS) now has the date too, in UTC.
 - The emulated CPU's translator finds the code of indirect jumps (returns, jumps and calls through a register or
   memory) more often without a trip through its dispatcher: its jump cache, in the same 16 KB, holds two entries per
   set, and the address's high bits are folded in before the hash. Linux programs that make many such jumps run

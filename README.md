@@ -142,8 +142,16 @@ right button, tap and touch again to drag. DOS programs need a mouse driver (CTM
 off; tap it: on again, starting afresh; the PC also goes off when its system powers it off, e.g. FreeDOS's
 `FDAPM POWEROFF`), **RESET** (hold it a second), **PAUSE** (the PC's picture dims and stays still, the sound
 stops) and **SETUP** (the settings panel); on the right the power light (green on, amber paused), the disk light (amber; both dim when off, as a real LED's
-lens), the **CD-ROM** tray and the battery (red when low). A ring
+lens), the **CD-ROM** tray, a **camera** (screenshots) and the battery (red when low). A ring
 fills around POWER's or RESET's icon while you hold it; a short tap on either does nothing while the PC runs.
+
+**Screenshots**: tap the **camera** and the PC's picture is saved on the card in `screenshots/`, as a PNG named by the
+day and that day's count (`2026-11-05_001.png`), at the picture's own size (640 x 400 for 80-column text, 320 x 200
+for a 256-colour game, 800 x 600 for Sprig Linux's console ...). The camera's flash lights up, then its light shows
+green for a moment (red: not saved, the card full or missing). The day comes from the Tab5's clock, which keeps UTC; for local
+dates set your time zone once over the serial console, as a POSIX TZ string: `clock tz PST8PDT,M3.2.0,M11.1.0`
+(`CET-1CEST,M3.5.0,M10.5.0/3` for central Europe). `clock` shows the time, `clock 2026-11-05 18:30:00` sets it
+(UTC). Serial `shot` takes a screenshot too.
 
 **The CD-ROM drive**: every machine has one, empty unless its settings file names a disc. The tray shows the disc's
 name; tap it for a dialog listing the `.iso` files at the root of the card (1 MB or more) and **No disc**: **Insert**

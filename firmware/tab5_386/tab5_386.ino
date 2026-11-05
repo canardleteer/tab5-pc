@@ -18,6 +18,8 @@
 //                  | fps <n> (screen refresh rate, 0 = paused) | mem | vol <0-255> | mouse <gain> | wifi on|off | wifi <ssid> <password> | ip | net | raw 0|1 | steps <n> | vgafast 0|1 | peek <addr> [<len>] | panel
 //                  | text (the screen's text in a text mode) | stap <x> <y> <ms> (a press on the side panels)
 //                  | pd [0|1] (the fast path's pre-decoded blocks; off / on) | reset (the PC's reset button) | poweroff
+//                  | shot (a screenshot to /sdcard/screenshots, as the side panel's camera) | clock [YYYY-MM-DD HH:MM:SS (UTC)]
+//                  | clock tz <POSIX TZ> (the time zone for local time: screenshots' names, file dates)
 #include <M5Unified.h>
 #include <SD_MMC.h>
 #include <lgfx/v1/platforms/esp32p4/Panel_DSI.hpp>
@@ -191,6 +193,7 @@ static const char* pc_state() {
 
 #include "battery.h"
 #include "settings_ui.h"
+#include "screenshot.h"
 #include "side_ui.h"
 
 // ---- display ------------------------------------------------------------------------------------------------
@@ -343,6 +346,20 @@ static int g_native_w = NATIVE_W, g_native_h = NATIVE_H;   // its size
 static uint8_t g_native_dirty[NATIVE_VBE_H];
 static T386Native g_native = {};   // what is on the panel (w 0: tiny386's whole picture is)
 static bool g_native_on = true;    // serial native 0|1: tiny386's renderer for every mode instead
+
+// The PC's picture as the panel shows it, at its own size (screenshot.h): the native renderer's when it drew the
+// panel last (a graphics mode), else tiny386's, centred in its frame buffer (a text mode: the characters' dots)
+static bool pc_picture(const uint16_t** px, int* w, int* h, int* stride) {
+  if (!g_pc || !g_emu_fb) return false;
+  if (g_native.w && g_native_fb) {
+    *px = g_native_fb, *w = g_native.w, *h = g_native.h, *stride = g_native.w;
+    return true;
+  }
+  int pw, ph;
+  if (!t386_vga_picture(g_pc->vga, &pw, &ph) || pw > EMU_W || ph > EMU_H) pw = EMU_W, ph = EMU_H;
+  *px = g_emu_fb + (size_t)(EMU_H - ph) / 2 * EMU_W + (EMU_W - pw) / 2, *w = pw, *h = ph, *stride = EMU_W;
+  return true;
+}
 
 // The panel brought up to date with what t386_vga_render_native drew (n: its picture)
 static void show_native(const T386Native& n) {
@@ -716,6 +733,10 @@ static void handle_serial() {
     } else if (line.startsWith("raw ")) {   // raw 0|1: disk images as raw card sectors (from the next start)
       g_prefs.putBool("raw", line.substring(4).toInt() != 0);
       Serial.println("raw access: from the next start");
+    } else if (line == "shot") {   // a screenshot, as the side panel's camera (screenshot.h)
+      shot_start(esp_timer_get_time() / 1000);
+    } else if (line == "clock" || line.startsWith("clock ")) {   // clock [YYYY-MM-DD HH:MM:SS]: the Tab5's clock
+      clock_command(line.length() > 6 ? line.substring(6) : String());
     } else if (line.startsWith("i2c ")) {   // i2c <addr> <reg> [<value>]: read or write a register on the internal I2C
       unsigned a = 0, r = 0, v = 0;   // bus (codec 10, IO expanders 43/44, touch...), hex
       const int n = sscanf(line.c_str() + 4, "%x %x %x", &a, &r, &v);
@@ -1121,6 +1142,9 @@ void setup() {
   cfg.internal_spk = true;   // configured here, switched on only while there is sound (audio.h)
   M5.begin(cfg);
   audio_setup();
+  xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
+  clock_setup();   // (before the PC: its CMOS clock reads the time)
+  xSemaphoreGive(g_i2c_lock);
   Serial.printf("\nTab5 PC %s (reset reason %d, wakeup cause %d)\n", FIRMWARE_VERSION, (int)esp_reset_reason(),
                 (int)esp_sleep_get_wakeup_cause());
   kbd_begin();

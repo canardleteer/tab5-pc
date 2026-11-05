@@ -10,8 +10,12 @@
 //   setup     a tap: the settings panel
 //   lights    power (green on, amber paused, dim green off), disk (amber: the PC's disk used lately; dim when not),
 //             the battery (grey; red at 15% or less)
-//   CD tray   on the right, between the lights and the battery: the CD-ROM drive (cd_drive.h), its disc's name; a tap
-//             opens the dialog choosing another (an .iso at the card's root) or none (settings_ui.h's MODAL_CD)
+//   CD tray   on the right, below the lights: the CD-ROM drive (cd_drive.h), its disc's name; a tap opens the dialog
+//             choosing another (an .iso at the card's root) or none (settings_ui.h's MODAL_CD)
+//   camera    on the right, below the CD tray: a retro camera in a window; a tap saves the PC's picture in
+//             /sdcard/screenshots (screenshot.h): the camera's flash lights, then its light shows green (saved) or red
+//             (failed) for a while
+// The right panel's four windows line up with the left's keys: lights, CD tray, camera, battery.
 // Each panel is an LVGL display of its own (SIDE_W x SCR_H, anti-aliased), drawn where something changed and put on
 // the panel by the PPA (settings_ui.h's ppa_blit), only while the settings panel is closed. Drawn at once when
 // something changed (lv_refr_now), not by LVGL's timers: nothing here moves by itself, and LVGL run every 10 ms
@@ -21,13 +25,14 @@
 
 static constexpr int SIDE_W = OUT_X, SIDE_HOLD_MS = 1000;
 static constexpr int64_t SIDE_DISK_MS = 120;   // the disk light stays on this long after the disk was used
-enum { SB_POWER, SB_RESET, SB_PAUSE, SB_SETUP, SB_N, SB_TRAY = SB_N + 1 };   // (SB_N: anywhere, panels off)
+enum { SB_POWER, SB_RESET, SB_PAUSE, SB_SETUP, SB_N, SB_TRAY = SB_N + 1, SB_SHOT };   // (SB_N: anywhere, panels off)
 static constexpr int SB_SIZE = 112;
-static int sb_y(int i) { return 104 + i * 170; }   // a button's centre
-// The right panel's three windows (lights, CD tray, battery): one size, evenly spaced
-static constexpr int WELL_X = 16, WELL_W = SIDE_W - 32, WELL_H = 160;
-static constexpr int well_y(int i) { return 32 + i * (SCR_H - 64 - WELL_H) / 2; }
+static constexpr int sb_y(int i) { return 104 + i * 170; }   // a button's centre (both panels' rows)
+// The right panel's windows (lights, CD tray, camera, battery): one size, each on a row of the left panel's keys
+static constexpr int WELL_X = 16, WELL_W = SIDE_W - 32, WELL_H = 140;
+static constexpr int well_y(int i) { return sb_y(i) - WELL_H / 2; }
 static constexpr int TRAY_X = WELL_X, TRAY_Y = well_y(1), TRAY_W = WELL_W, TRAY_H = WELL_H;   // the CD tray
+static constexpr int CAM_Y = well_y(2);   // the camera's window
 
 // the case: dark grey, a dark seam toward the picture (a light one there met the picture's text); keys raised on it (a light top edge, a shadow), lights in
 // recessed windows. Flat colours that RGB565 holds exactly (green steps twice as fine as red and blue: in between,
@@ -46,6 +51,8 @@ struct SideState {   // what is shown
   bool batt_charging;
   uint32_t cd_seq;   // the disc (g_cd_seq)
   bool cd_pressed, cd_enabled;
+  bool shot_pressed, shot_enabled;
+  int shot;          // SHOT_IDLE .. SHOT_FAILED (screenshot.h)
 };
 static SideState g_side_shown;
 static bool g_side_made = false, g_side_fresh = true;   // fresh: every part set again (just made)
@@ -53,6 +60,7 @@ static lv_display_t* g_side_disp[2];
 static lv_obj_t *g_sb_key[SB_N], *g_sb_icon[SB_N], *g_sb_text[SB_N], *g_sb_ring[SB_N];
 static lv_obj_t *g_sl_power, *g_sl_disk, *g_sl_batt_icon, *g_sl_batt_text;
 static lv_obj_t *g_cd_drawer, *g_cd_label, *g_cd_name;
+static lv_obj_t *g_cam, *g_cam_flash, *g_cam_light;   // the camera (all of it), its flash's window, its light
 static int g_side_pressed = -1;    // the button under the finger (SB_N: anywhere, with the side panels off)
 static int64_t g_side_press_at = 0;
 static bool g_side_fired = false;  // the held button's action is done (until the finger lifts)
@@ -188,8 +196,8 @@ static void side_tray(lv_obj_t* scr) {
   lv_obj_t* w = side_well(scr, TRAY_X, TRAY_Y, TRAY_W, TRAY_H);
   lv_obj_t* t = g_cd_label = side_text(w, &lv_font_montserrat_14, K_LABEL, 1);
   lv_label_set_text(t, "CD-ROM");
-  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 26);
-  lv_obj_t* drawer = g_cd_drawer = side_box(w, 9, 54, TRAY_W - 20, 30);
+  lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 16);
+  lv_obj_t* drawer = g_cd_drawer = side_box(w, 9, 42, TRAY_W - 20, 30);
   lv_obj_set_style_radius(drawer, 6, 0);
   lv_obj_set_style_bg_opa(drawer, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(drawer, lv_color_hex(K_KEY), 0);
@@ -206,10 +214,52 @@ static void side_tray(lv_obj_t* scr) {
   lv_obj_set_style_bg_opa(groove, LV_OPA_COVER, 0);
   lv_obj_set_style_bg_color(groove, lv_color_hex(K_EDGE), 0);
   g_cd_name = side_text(w, &lv_font_montserrat_14, K_INK, 0);
-  lv_obj_set_pos(g_cd_name, 6, 96);
+  lv_obj_set_pos(g_cd_name, 6, 84);
   lv_obj_set_size(g_cd_name, TRAY_W - 14, 36);
   lv_label_set_long_mode(g_cd_name, LV_LABEL_LONG_DOT);   // (two lines, then ...)
   lv_obj_set_style_text_align(g_cd_name, LV_TEXT_ALIGN_CENTER, 0);
+}
+
+static lv_obj_t* side_shape(lv_obj_t* parent, int x, int y, int w, int h, uint32_t color, int radius) {
+  lv_obj_t* o = side_box(parent, x, y, w, h);
+  lv_obj_set_style_radius(o, radius, 0);
+  lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+  lv_obj_set_style_bg_color(o, lv_color_hex(color), 0);
+  return o;
+}
+
+// The camera: a rangefinder of the 1960s drawn in a window, no words. A chrome top plate (its shutter button, its
+// viewfinder) over a black body, a big lens (chrome ring, dark glass, a glint), a flash on top; a small light on the
+// body says how the last picture went. The whole window is the button; the camera sinks a little while touched.
+static constexpr uint32_t K_CHROME = 0xA8B0B8, K_CHROME_DARK = 0x6A7078, K_BODY = 0x2C3136, K_BODY_RIM = 0x464C53,
+                          K_GLASS = 0x1A2836, K_FROST = 0x8A939C;
+static void side_camera(lv_obj_t* scr) {
+  lv_obj_t* w = side_well(scr, WELL_X, CAM_Y, WELL_W, WELL_H);
+  lv_obj_t* c = g_cam = side_box(w, 0, 0, WELL_W, WELL_H);
+  lv_obj_set_style_translate_y(c, 2, LV_STATE_PRESSED);
+  const int x0 = 14, y0 = 33;   // the body's top left (100 x 76 with the flash above it)
+  // the flash: a dark housing on the top plate, its window lit while a picture is taken
+  side_shape(c, x0 + 60, y0 - 4, 34, 22, K_CHROME_DARK, 4);
+  g_cam_flash = side_shape(c, x0 + 64, y0, 26, 12, K_FROST, 2);
+  // the top plate (chrome), its shutter button and viewfinder
+  side_shape(c, x0 + 10, y0 + 6, 16, 8, K_CHROME, 3);
+  lv_obj_t* plate = side_shape(c, x0, y0 + 12, 100, 20, K_CHROME, 6);
+  lv_obj_set_style_border_width(plate, 1, 0);
+  lv_obj_set_style_border_side(plate, LV_BORDER_SIDE_TOP, 0);
+  lv_obj_set_style_border_color(plate, lv_color_hex(0xD8DEE4), 0);
+  side_shape(c, x0 + 8, y0 + 17, 16, 10, K_GLASS, 2);
+  // the body (black, a chrome line where it meets the plate) and its light
+  lv_obj_t* body = side_shape(c, x0, y0 + 28, 100, 48, K_BODY, 8);
+  lv_obj_set_style_border_width(body, 1, 0);
+  lv_obj_set_style_border_color(body, lv_color_hex(K_BODY_RIM), 0);
+  side_shape(c, x0 + 2, y0 + 31, 96, 2, K_CHROME_DARK, 1);
+  g_cam_light = side_shape(c, x0 + 88, y0 + 38, 6, 6, K_INK_OFF, LV_RADIUS_CIRCLE);
+  // the lens, standing out of the body: a chrome ring, a darker ring, the glass and a glint
+  side_shape(c, x0 + 26, y0 + 18, 48, 48, K_CHROME, LV_RADIUS_CIRCLE);
+  side_shape(c, x0 + 30, y0 + 22, 40, 40, K_CHROME_DARK, LV_RADIUS_CIRCLE);
+  side_shape(c, x0 + 34, y0 + 26, 32, 32, K_BODY, LV_RADIUS_CIRCLE);
+  side_shape(c, x0 + 39, y0 + 31, 22, 22, K_GLASS, LV_RADIUS_CIRCLE);
+  side_shape(c, x0 + 43, y0 + 34, 6, 6, 0x8FA6BC, LV_RADIUS_CIRCLE);
 }
 
 static void side_setup() {   // after ui_setup (lv_init, the settings panel's display: the default one again after)
@@ -231,10 +281,11 @@ static void side_setup() {   // after ui_setup (lv_init, the settings panel's di
       for (int i = 0; i < SB_N; ++i) side_key(scr, i);
     } else {
       lv_obj_t* w = side_well(scr, WELL_X, well_y(0), WELL_W, WELL_H);
-      g_sl_power = side_led(w, 18, 47, "POWER");
-      g_sl_disk = side_led(w, 18, 93, "DISK");
+      g_sl_power = side_led(w, 18, 37, "POWER");
+      g_sl_disk = side_led(w, 18, 83, "DISK");
       side_tray(scr);
-      lv_obj_t* bw = side_well(scr, WELL_X, well_y(2), WELL_W, WELL_H);
+      side_camera(scr);
+      lv_obj_t* bw = side_well(scr, WELL_X, well_y(3), WELL_W, WELL_H);
       g_sl_batt_icon = side_text(bw, &lv_font_montserrat_36, K_LABEL, 0);
       lv_obj_align(g_sl_batt_icon, LV_ALIGN_CENTER, 0, -18);
       g_sl_batt_text = side_text(bw, &lv_font_montserrat_20, K_LABEL, 1);
@@ -288,6 +339,9 @@ static SideState side_wanted(int64_t now) {
   s.cd_seq = g_cd_seq;
   s.cd_pressed = g_side_pressed == SB_TRAY;
   s.cd_enabled = g_cd_drive >= 0 && !g_pc_stopped;
+  s.shot_pressed = g_side_pressed == SB_SHOT;
+  s.shot = shot_status(now);
+  s.shot_enabled = on;
   return s;
 }
 
@@ -360,6 +414,26 @@ static int side_show(const SideState& s) {
     lv_obj_set_style_text_color(g_cd_name, lv_color_hex(s.cd_enabled && name.length() ? K_INK : K_INK_OFF), 0);
     lv_obj_set_style_text_color(g_cd_label, lv_color_hex(s.cd_enabled ? K_LABEL : K_INK_OFF), 0);
   }
+  if (all || s.shot_pressed != was.shot_pressed) {
+    changed |= 2;
+    if (s.shot_pressed) lv_obj_add_state(g_cam, LV_STATE_PRESSED);
+    else lv_obj_remove_state(g_cam, LV_STATE_PRESSED);
+  }
+  if (all || s.shot != was.shot || s.shot_enabled != was.shot_enabled) {   // the flash fires, the light tells
+    changed |= 2;
+    const bool firing = s.shot == SHOT_SAVING;
+    lv_obj_set_style_bg_color(g_cam_flash, lv_color_hex(firing ? 0xFFFFFF : K_FROST), 0);
+    lv_obj_set_style_shadow_width(g_cam_flash, firing ? 28 : 0, 0);
+    lv_obj_set_style_shadow_spread(g_cam_flash, firing ? 6 : 0, 0);
+    lv_obj_set_style_shadow_color(g_cam_flash, lv_color_hex(0xFFF4D6), 0);
+    lv_obj_set_style_shadow_opa(g_cam_flash, LV_OPA_80, 0);
+    const uint32_t light = s.shot == SHOT_SAVED ? K_GREEN : s.shot == SHOT_FAILED ? K_RED : K_INK_OFF;
+    lv_obj_set_style_bg_color(g_cam_light, lv_color_hex(light), 0);
+    lv_obj_set_style_shadow_width(g_cam_light, light == K_INK_OFF ? 0 : 10, 0);
+    lv_obj_set_style_shadow_color(g_cam_light, lv_color_hex(light), 0);
+    lv_obj_set_style_shadow_opa(g_cam_light, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(g_cam, s.shot_enabled || s.shot ? LV_OPA_COVER : LV_OPA_40, 0);   // (the PC off: dim)
+  }
   was = s;
   return changed;
 }
@@ -421,9 +495,13 @@ static bool side_owns(int x, int y) {   // a touch starting there is the side pa
 
 static int side_button_at(int x, int y) {
   if (!g_side_on) return -1;
-  if (x >= SCR_W - SIDE_W)   // the right panel: the CD tray
-    return x >= SCR_W - SIDE_W + TRAY_X - 8 && x < SCR_W - SIDE_W + TRAY_X + TRAY_W + 8 && y >= TRAY_Y - 8 &&
-           y < TRAY_Y + TRAY_H + 8 ? SB_TRAY : -1;
+  if (x >= SCR_W - SIDE_W) {   // the right panel: the CD tray, the camera
+    if (x >= SCR_W - SIDE_W + TRAY_X - 8 && x < SCR_W - SIDE_W + TRAY_X + TRAY_W + 8 && y >= TRAY_Y - 8 &&
+        y < TRAY_Y + TRAY_H + 8)
+      return SB_TRAY;
+    return x >= SCR_W - SIDE_W + WELL_X - 8 && x < SCR_W - SIDE_W + WELL_X + WELL_W + 8 && y >= CAM_Y - 8 &&
+                   y < CAM_Y + WELL_H + 8 ? SB_SHOT : -1;
+  }
   if (x >= SIDE_W) return -1;
   for (int i = 0; i < SB_N; ++i)
     if (abs(y - sb_y(i)) <= SB_SIZE / 2 + 8) return i;
@@ -452,4 +530,5 @@ static void side_touch(int x, int y, int kind, int64_t now) {
   else if (i == SB_PAUSE && on) pc_set_paused(!g_user_pause);
   else if (i == SB_SETUP) panel_open();
   else if (i == SB_TRAY && !g_pc_stopped) cd_dialog_open();
+  else if (i == SB_SHOT && on) shot_start(now);
 }
