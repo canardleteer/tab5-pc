@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Opening the Tab5's web page sets its clock and time zone from the browser's (screenshots' names, file dates on the
+  card): the zone is sent as a POSIX TZ string worked out in the page (the browser's offsets and this year's
+  daylight-saving changes), kept in NVS; the clock is written only when it is more than 2 s off. Serial `clock`
+  still shows and sets them.
 - tiny386 updated (to 2c1205c). Our fixes for AAM with 0, real-mode interrupts' stack, the 9-dot text's ninth column
   and the Sound Blaster's DMA are now tiny386's own (five patches fewer). New from tiny386: text mode drawn as a VGA
   shows it (blinking characters, the cursor's shape), the keyboard's scancode set 2, PS/2 mouse packets queued whole,

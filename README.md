@@ -142,10 +142,10 @@ fills around POWER's or RESET's icon while you hold it; a short tap on either do
 **Screenshots**: tap the **camera** and the PC's picture is saved on the card in `screenshots/`, as a PNG named by the
 day and that day's count (`2026-11-05_001.png`), at the picture's own size (640 x 400 for 80-column text, 320 x 200
 for a 256-colour game, 800 x 600 for Sprig Linux's console ...). The camera's flash lights up, then its light shows
-green for a moment (red: not saved, the card full or missing). The day comes from the Tab5's clock, which keeps UTC; for local
-dates set your time zone once over the serial console, as a POSIX TZ string: `clock tz PST8PDT,M3.2.0,M11.1.0`
-(`CET-1CEST,M3.5.0,M10.5.0/3` for central Europe). `clock` shows the time, `clock 2026-11-05 18:30:00` sets it
-(UTC). Serial `shot` takes a screenshot too.
+green for a moment (red: not saved, the card full or missing). The day comes from the Tab5's clock (it keeps UTC),
+in your time zone: opening the Tab5's web page sets both from your browser. Over the serial console, `clock` shows
+the time, `clock 2026-11-05 18:30:00` sets it (UTC) and `clock tz PST8PDT,M3.2.0,M11.1.0` the time zone, as a POSIX
+TZ string. Serial `shot` takes a screenshot too.
 
 **The CD-ROM drive**: every machine has one, empty unless its settings file names a disc. The tray shows the disc's
 name; tap it for a dialog listing the `.iso` files at the root of the card (1 MB or more) and **No disc**: **Insert**

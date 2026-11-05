@@ -7,6 +7,8 @@
 //                                               images can be deleted or replaced; restart: the whole Tab5 (after
 //                                               changing tiny386.ini, or to start a stopped PC; WiFi comes back on)
 //   POST   /api/set?volume=0-255&brightness=0-255
+//   POST   /api/clock?utc=<seconds>&tz=<POSIX TZ>  the Tab5's clock and time zone, from the browser (the page, when
+//                                               opened: clock.h)
 //   GET    /api/ls?vol=V&path=P                 JSON list of a directory
 //   GET    /api/file?vol=V&path=P               download
 //   PUT    /api/file?vol=V&path=P&offset=N[&size=S]  upload a chunk (<= 256 KB) of a file at N; 0 starts it (folders on
@@ -202,6 +204,11 @@ static esp_err_t h_pc(httpd_req_t* req) {
   return h_status(req);
 }
 
+static esp_err_t h_clock(httpd_req_t* req) {
+  clock_set((time_t)strtoll(query(req, "utc").c_str(), nullptr, 10), query(req, "tz"));
+  return send_json(req, "{\"ok\":true}");
+}
+
 static esp_err_t h_set(httpd_req_t* req) {
   const String v = query(req, "volume"), b = query(req, "brightness");
   if (!v.isEmpty()) set_volume(v.toInt());
@@ -374,6 +381,7 @@ static void web_start() {
     {"/api/status", HTTP_GET, h_status, nullptr},
     {"/api/pc", HTTP_POST, h_pc, nullptr},
     {"/api/set", HTTP_POST, h_set, nullptr},
+    {"/api/clock", HTTP_POST, h_clock, nullptr},
     {"/api/ls", HTTP_GET, h_ls, nullptr},
     {"/api/file", HTTP_GET, h_get, nullptr},
     {"/api/file", HTTP_PUT, h_put, nullptr},

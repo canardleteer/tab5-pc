@@ -5,9 +5,7 @@
 //   below the display task's 2) makes the PNG and writes it, the PC running on. The camera's flash lights (at least
 //   SHOT_FLASH_MS), then the camera's light shows green (saved) or red (not) for 2 s. (A white flash over the PC's
 //   picture too, up to 2026-11-05: it needed a 1.4 MB copy of it, which often wasn't free beside the PC.)
-//   The day comes from the Tab5's clock (the RTC, kept by its battery, in UTC; set with serial "clock" or by any
-//   program that sets it), in the time zone set with serial "clock tz" (a POSIX TZ string, kept in NVS; UTC until
-//   then): without a date the name is undated_001.png. (tiny386's CMOS clock stays in UTC: it reads gmtime.)
+//   The day comes from the Tab5's clock, in its time zone (clock.h): without a date the name is undated_001.png.
 #pragma once
 #include <dirent.h>
 #include <sys/stat.h>
@@ -28,56 +26,6 @@ static TaskHandle_t g_shot_task = nullptr;
 // defined beside the renderers (tab5_386.ino): the PC's picture as it is now (RGB565, its first pixel, size, row
 // length in pixels)
 static bool pc_picture(const uint16_t** px, int* w, int* h, int* stride);
-
-static bool clock_valid() { return time(nullptr) >= 1704067200; }   // (2024-01-01: the RTC was set at some time)
-
-static void clock_print() {   // the time, UTC and local
-  const time_t t = time(nullptr);
-  struct tm u, l;
-  gmtime_r(&t, &u);
-  localtime_r(&t, &l);
-  if (!clock_valid()) {
-    Serial.println("clock: not set (serial: clock YYYY-MM-DD HH:MM:SS, in UTC)");
-    return;
-  }
-  Serial.printf("clock: %04d-%02d-%02d %02d:%02d:%02d UTC, %04d-%02d-%02d %02d:%02d:%02d local (TZ %s)\n",
-                u.tm_year + 1900, u.tm_mon + 1, u.tm_mday, u.tm_hour, u.tm_min, u.tm_sec, l.tm_year + 1900,
-                l.tm_mon + 1, l.tm_mday, l.tm_hour, l.tm_min, l.tm_sec, getenv("TZ") ? getenv("TZ") : "UTC0");
-}
-
-// The Tab5's clock into the system's (time(): file dates, the names here, tiny386's CMOS clock), and the time zone
-// for local time: at the start
-static void clock_tz() {   // the time zone set (after setSystemTimeFromRtc, which sets TZ to GMT0)
-  setenv("TZ", g_prefs.getString("tz", "UTC0").c_str(), 1);
-  tzset();
-}
-
-static void clock_setup() {
-  if (M5.Rtc.isEnabled()) M5.Rtc.setSystemTimeFromRtc();
-  else Serial.println("clock: no RTC");
-  clock_tz();
-  clock_print();
-}
-
-// serial "clock" (the time), "clock YYYY-MM-DD HH:MM:SS" (the RTC and the system's set, in UTC) or "clock tz <TZ>"
-// (the time zone, a POSIX TZ string such as PST8PDT,M3.2.0,M11.1.0 or CET-1CEST,M3.5.0,M10.5.0/3; kept)
-static void clock_command(const String& arg) {
-  int Y, M, D, h, m, s;
-  if (arg.startsWith("tz ")) {
-    g_prefs.putString("tz", arg.substring(3));
-    clock_tz();
-  } else if (arg.length() && sscanf(arg.c_str(), "%d-%d-%d %d:%d:%d", &Y, &M, &D, &h, &m, &s) == 6) {
-    m5::rtc_datetime_t dt;
-    dt.date.year = Y, dt.date.month = M, dt.date.date = D;
-    dt.time.hours = h, dt.time.minutes = m, dt.time.seconds = s;
-    xSemaphoreTake(g_i2c_lock, portMAX_DELAY);
-    M5.Rtc.setDateTime(dt);
-    M5.Rtc.setSystemTimeFromRtc();
-    xSemaphoreGive(g_i2c_lock);
-    clock_tz();
-  }
-  clock_print();
-}
 
 // the next free name in /sdcard/screenshots for today: its count one past the highest there
 static bool shot_next_path(char* out, size_t n) {

@@ -267,5 +267,22 @@ $('donebtn').onclick=async()=>{await api('POST','/api/pc?do=done').catch(e=>aler
 for(const [id,key] of [['vol','volume'],['bri','brightness']]){const el=$(id);
   el.oninput=()=>{sliding=id;$(id+'v').value=el.value;clearTimeout(el.t);el.t=setTimeout(()=>api('POST','/api/set?'+key+'='+el.value),120)};
   el.onchange=()=>{sliding=null;api('POST','/api/set?'+key+'='+el.value)}}
+// The Tab5's clock and time zone from this browser's (clock.h: screenshots' names, file dates), once per visit. The
+// zone as a POSIX TZ string, as the Tab5's C library reads it: the offsets and this year's changes found here.
+function posixTZ(){
+  const y=new Date().getFullYear(),east=t=>-new Date(t).getTimezoneOffset();   // minutes east of UTC at t (ms)
+  const hm=m=>Math.floor(m/60)+(m%60?':'+String(m%60).padStart(2,'0'):'');
+  const off=e=>(e>0?'-':'')+hm(Math.abs(e));   // POSIX counts hours west of UTC
+  const t0=Date.UTC(y,0,1),t1=Date.UTC(y+1,0,1),tr=[];let prev=east(t0);
+  for(let t=t0+3600e3;t<=t1;t+=3600e3){const e=east(t);if(e==prev)continue;
+    let lo=t-3600e3,hi=t;while(hi-lo>60e3){const mid=lo+Math.floor((hi-lo)/120e3)*60e3;if(east(mid)==prev)lo=mid;else hi=mid}
+    tr.push({t:hi,from:prev,to:e});prev=e}
+  if(tr.length!=2)return 'LOC'+off(east(Date.now()));   // no daylight saving (or not a plain pair of changes)
+  const std=Math.min(tr[0].from,tr[0].to),dst=Math.max(tr[0].from,tr[0].to);
+  const rule=x=>{const d=new Date(x.t+x.from*60e3);   // the local time it happened, in the offset before
+    const m=d.getUTCMonth()+1,day=d.getUTCDate(),dim=new Date(Date.UTC(d.getUTCFullYear(),m,0)).getUTCDate();
+    return 'M'+m+'.'+(day+7>dim?5:Math.ceil(day/7))+'.'+d.getUTCDay()+'/'+hm(d.getUTCHours()*60+d.getUTCMinutes())};
+  return 'LOC'+off(std)+'LDT'+off(dst)+','+rule(tr.find(x=>x.to==dst))+','+rule(tr.find(x=>x.to==std))}
+api('POST','/api/clock?'+q({utc:Math.round(Date.now()/1000),tz:posixTZ()})).catch(()=>{});
 status().then(list);setInterval(()=>{if(!busy)status()},2000);
 </script></body></html>)HTML";

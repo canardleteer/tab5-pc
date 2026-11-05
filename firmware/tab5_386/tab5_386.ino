@@ -182,6 +182,7 @@ static void t386_msync(void* p, size_t n, int flags) {
 }
 
 #include "disk_access.h"
+#include "clock.h"
 #include "web.h"
 #include "fd_install.h"
 #include "linux_install.h"
