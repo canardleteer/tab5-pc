@@ -83,9 +83,18 @@ Lessons:
 ## The SD card
 
 - **Raw sectors for disk images.** Seeking backwards in a large file through FatFs walks its cluster chain from the
-  start. Disk images are read and written as card sectors instead, with a small read-ahead (DOS reads one sector at a
-  time), through a list of where the image's pieces lie on the card, made once at startup. Images the Tab5 writes
-  (first-start install, web uploads) are put in one piece; one copied onto a card in use may lie in many.
+  start. Disk images are read and written as card sectors instead, with a read-ahead (DOS reads one sector at a
+  time), through a list of where the image's pieces lie on the card, made at startup (and for a CD-ROM image when it
+  is put in). Images the Tab5 writes (first-start install, web uploads) are put in one piece; one copied onto a card
+  in use may lie in many.
+- **Big card commands, the card working beside the PC.** A card command costs ~0.2 ms before any data moves, and a
+  small write far more, so: a write command's sectors are gathered and written together when it ends (the BIOS
+  sends a sector at a time); a read that misses takes 32 KB when it goes on from the last one; and during a
+  sequential read, a task on core 0 reads the next 32 KB while the PC runs on core 1. The card reads ~19 MB/s at
+  1 MB a command (40 MHz, 4 bits), 15.6 MB/s at 16 KB, 2.7 MB/s at 512 bytes (serial `sdbench`).
+- **read(), not fread, for card files.** In ESP-IDF's C library a buffered `fread` from the card goes 512 bytes
+  per card command (~1.1 MB/s) and an unbuffered one a byte per call (~0.05 MB/s); `read()` hands FatFs the whole
+  request (~10 MB/s). Writes are ~4 MB/s either way.
 - **The card and the Wi-Fi link share one SDMMC host.** While a card write holds the host, incoming network data
   waits in the Wi-Fi driver's few buffers. Uploads are received whole (256 KB at a time) into PSRAM before anything
   is written, so nothing arrives during the write.

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Disk reads and writes are faster:
+  - A write command's sectors go to the card together (up to 64 KB at a time) instead of one block at a time: a
+    DOS file copy takes about half as long (4.2 MB: 18.9 -> 9.1 s), and Linux writes ~1.7x faster. The command
+    still completes only once its sectors are on the card.
+  - While a guest reads a file sequentially, the next 32 KB are read from the card on the other core: DOS file
+    reads ~4.2 -> ~6 MB/s, Linux disk reads 2.4 -> ~3.8 MB/s (also READ/WRITE MULTIPLE in 16-sector blocks now).
+  - CD-ROM images are read as raw card sectors, as hard disk images are: reads 0.2-0.5 -> 4-6 MB/s, and changing
+    the disc takes 0.5 s instead of up to 13 s for a 600 MB image (finding an image's place on the card no longer
+    reads a sector of every cluster).
+  - Linux kernels and other files loaded at the PC's start: a 2.9 MB kernel in 0.22 s instead of 2.1 s. Web
+    downloads ~2x faster. (Card files are read with read(), not fread, which went 512 bytes at a time.)
+  - New serial commands: `sdbench` (the card's raw read speed, reads only) and `loads` (the files loaded at the
+    PC's start and how long they took). Serial `S` shows the prefetched reads.
+- Smaller translated code (~20% less: 33 -> 27 bytes per x86 instruction on a Linux start), so more of it fits the
+  code cache: a game's timed demo ~3% faster, a Linux file-listing workload ~13%, a text web browser's page ~10%,
+  a graphical desktop's start ~1 s quicker.
 - While Wi-Fi is on, the Tab5 checks its clock with pool.ntp.org (SNTP): when Wi-Fi comes up, then every 3 hours;
   the RTC is written when it is more than 2 s off. Only while the user has Wi-Fi on: nothing turns it on for this.
 - Opening the Tab5's web page sets its clock and time zone from the browser's (screenshots' names, file dates on the

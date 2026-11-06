@@ -24,6 +24,7 @@
 #include <esp_vfs_fat.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "web_page.h"
 
 static httpd_handle_t g_httpd = nullptr;
@@ -257,14 +258,16 @@ static esp_err_t h_get(httpd_req_t* req) {
   size_t total = 0;
   for (;;) {
     // a read that fails is tried again before the download is given up
+    // (read(), not fread: through stdio's buffer the card was read 512 bytes a command, ~1.1 MB/s)
     for (int tries = 0;; ++tries) {
+      ssize_t got;
       {
         JitHold hold;   // (tab5_386.ino: the card's driver's cache operations on PSRAM)
-        n = fread(buf, 1, BUF, f);
+        got = read(fileno(f), buf, BUF);
       }
-      if (n || !ferror(f) || tries == 3) break;
-      clearerr(f);
-      fseek(f, total, SEEK_SET);
+      n = got > 0 ? (size_t)got : 0;
+      if (got >= 0 || tries == 3) break;
+      lseek(fileno(f), total, SEEK_SET);
       delay(1);
     }
     if (!n) break;

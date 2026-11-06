@@ -20,6 +20,8 @@
 //                  | pd [0|1] (the fast path's pre-decoded blocks; off / on) | reset (the PC's reset button) | poweroff
 //                  | shot (a screenshot to /sdcard/screenshots, as the side panel's camera) | clock [YYYY-MM-DD HH:MM:SS (UTC)]
 //                  | clock tz <POSIX TZ> (the time zone for local time: screenshots' names, file dates)
+//                  | sdbench (the SD card's raw read speed; reads only) | loads (the files loaded at the PC's start and
+//                  how long they took)
 #include <M5Unified.h>
 #include <SD_MMC.h>
 #include <lgfx/v1/platforms/esp32p4/Panel_DSI.hpp>
@@ -31,7 +33,7 @@
 #include <atomic>
 extern "C" {
 extern int t386_jit_hot;
-extern uint32_t t386_disk_cmds, t386_disk_sectors, t386_disk_hits, t386_disk_retries;
+extern uint32_t t386_disk_cmds, t386_disk_sectors, t386_disk_hits, t386_disk_retries, t386_disk_prefetched;
 extern uint64_t t386_disk_us;
 extern uint32_t t386_sync_calls, t386_sync_cycles;
 #include "src/tab5_config.h"
@@ -39,6 +41,9 @@ extern uint32_t t386_sync_calls, t386_sync_cycles;
 #include "pc.h"
 long cpui386_get_cycle(CPUI386* cpu);
 void t386_jit_report(char* buf, int len);
+void t386_card_bench(char* buf, int len);
+extern char t386_load_log[];
+long t386_pcmalloc_used(long* len);
 void t386_fpu_report(char* buf, int len);
 void t386_trace_report(void (*out)(const char*));
 void t386_trace_thaw(void);
@@ -471,14 +476,15 @@ static void print_stats() {
   {
     static uint64_t c0 = 0, n0 = 0;
     const uint64_t c = g_hpc_cyc, n = g_hpc_ins;
-    static uint32_t last_cmds, last_sectors, last_hits;
+    static uint32_t last_cmds, last_sectors, last_hits, last_pf;
     static uint64_t last_us;
-    Serial.printf("disk: %.0f commands/s, %.0f KB/s, %.0f%% of the time, %.0f reads/s read ahead, %lu tried again "
-                  "since the start\n",
+    Serial.printf("disk: %.0f commands/s, %.0f KB/s, %.0f%% of the time, %.0f reads/s read ahead, %.0f/s prefetched, "
+                  "%lu tried again since the start\n",
                   (t386_disk_cmds - last_cmds) / dt, (t386_disk_sectors - last_sectors) / 2.0 / dt,
                   (t386_disk_us - last_us) / 1e4 / dt, (t386_disk_hits - last_hits) / dt,
-                  (unsigned long)t386_disk_retries);
+                  (t386_disk_prefetched - last_pf) / dt, (unsigned long)t386_disk_retries);
     last_cmds = t386_disk_cmds, last_sectors = t386_disk_sectors, last_hits = t386_disk_hits, last_us = t386_disk_us;
+    last_pf = t386_disk_prefetched;
     static uint32_t last_sc, last_scyc;
     Serial.printf("code sync: %.0f/s, %.1f%% of core 1\n", (t386_sync_calls - last_sc) / dt,
                   (t386_sync_cycles - last_scyc) / dt / 3.6e6);
@@ -622,6 +628,31 @@ static void handle_serial() {
         p = e + 1;
       }
 #endif
+    } else if (line == "loads") {   // the files loaded at the PC's start and how long they took (src/host.c)
+      for (char* p = t386_load_log; *p; ) {
+        char* e = strstr(p, "; ");
+        if (e) *e = 0;
+        Serial.println(p);
+        if (e) *e = ';';
+        delay(3);
+        if (!e) break;
+        p = e + 2;
+      }
+      if (!t386_load_log[0]) Serial.println("loads: none from the card");
+      long pc_len, pc_used = t386_pcmalloc_used(&pc_len);
+      Serial.printf("device state (pcmalloc, 640K-768K): %ld of %ld bytes used\n", pc_used, pc_len);
+      Serial.printf("raw access: the last image mapped in %u ms\n", (unsigned)g_runs_ms);
+    } else if (line == "sdbench") {   // the card's raw read speed (src/t386_ide.c; reads only)
+      static char buf[900];
+      t386_card_bench(buf, sizeof(buf));
+      for (char* p = buf; *p; ) {
+        char* e = strstr(p, "; ");
+        if (e) *e = 0;
+        Serial.println(p);
+        delay(3);
+        if (!e) break;
+        p = e + 2;
+      }
     } else if (line == "jit") {
       static char buf[900];
       t386_jit_report(buf, sizeof(buf));

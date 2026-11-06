@@ -1,0 +1,16 @@
+READ/WRITE MULTIPLE in blocks of up to 16 sectors (was 4; QEMU's ide uses 16). Linux's libata sets the
+drive's maximum and takes an interrupt and a PIO transfer per block: 4x fewer of them for its reads and
+writes. io_buffer grows to 8 KB + 4 per drive (in the 640K-768K device state: the Linux machine used 71 of
+131 KB before). The BIOS (READ/WRITE SECTORS, a sector per block) is unaffected.
+
+--- a/ide.c
++++ b/ide.c
+@@ -303,7 +303,7 @@
+ #define SENSE_ILLEGAL_REQUEST 5
+ #define SENSE_UNIT_ATTENTION  6
+ 
+-#define MAX_MULT_SECTORS 4 /* 512 * 4 == 2048 */
++#define MAX_MULT_SECTORS 16 /* 512 * 16 == 8192 (READ/WRITE MULTIPLE: an interrupt per block) */
+ /* a write command's blocks are gathered, up to this many sectors, and written together */
+ #define WRITE_GATHER_SECTORS 128
+ 

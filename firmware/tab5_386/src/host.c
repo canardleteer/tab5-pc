@@ -2,6 +2,7 @@
 #include "tab5_config.h"
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 #include <stdatomic.h>
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -31,6 +32,8 @@ void pcmalloc_init(void* ptr, long len) {
   pcram_len = len;
 }
 
+long t386_pcmalloc_used(long* len) { *len = pcram_len; return pcram_off; }   // (serial "loads")
+
 void* pcmalloc(long size) {
   size = (size + 31) / 32 * 32;
   if (pcram_off + size > pcram_len) {
@@ -42,19 +45,35 @@ void* pcmalloc(long size) {
   return p;
 }
 
+// The files loaded from the card at the PC's start (kernel, linuxstart, ROMs) and how long each took (serial
+// "loads": the boot's log is gone by the time a console is attached)
+char t386_load_log[400];
+
 // A ROM from a file (absolute path, e.g. on the SD card), or else the BIOS images built into the firmware.
 // backward: the image ends at addr (the system BIOS ends at 1 MB).
 int load_rom(void* phys_mem, const char* file, uword addr, int backward) {
   const uint8_t* rom = NULL;
   long len = 0;
+  const int64_t t0 = esp_timer_get_time();
   FILE* fp = file && file[0] == '/' ? fopen(file, "rb") : NULL;
   if (fp) {
     fseek(fp, 0, SEEK_END);
     len = ftell(fp);
     rewind(fp);
-    fread((char*)phys_mem + addr - (backward ? len : 0), 1, len, fp);
+    const int64_t t1 = esp_timer_get_time();
+    // one read() of the whole file, which FatFs takes a cluster at a time straight into guest RAM (fread went through
+    // stdio's buffer, 512 bytes per card command: a 2.9 MB kernel took 2.1 s, 1.4 MB/s; unbuffered, a byte a call)
+    for (long done = 0; done < len;) {
+      const ssize_t n = read(fileno(fp), (char*)phys_mem + addr - (backward ? len : 0) + done, len - done);
+      if (n <= 0) break;
+      done += n;
+    }
     fclose(fp);
+    const int64_t t2 = esp_timer_get_time();
     fprintf(stderr, "rom %s: %ld bytes\n", file, len);
+    const size_t o = strlen(t386_load_log);
+    snprintf(t386_load_log + o, sizeof(t386_load_log) - o, "%s%s: %ld bytes, open %.1f ms, read %.1f ms (%.2f MB/s)",
+             o ? "; " : "", file, len, (t1 - t0) / 1e3, (t2 - t1) / 1e3, t2 > t1 ? len / (double)(t2 - t1) : 0.0);
     return len;
   }
   const char* base = file ? strrchr(file, '/') : NULL;

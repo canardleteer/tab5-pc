@@ -402,13 +402,6 @@ __asm__(
 	"	call t386_jit_h_write\n"
 	"	mv t6, a0\n"   // (nonzero: translated code overwritten)
 	"	JRESTORE\n"
-	// a linkable exit, not linked yet: lui ra / jalr ra here, then the x86 address (ra points to it)
-	"	.globl t386_jit_link_exit\n"
-	"t386_jit_link_exit:\n"
-	"	lw a1, 0(ra)\n"
-	"	addi a2, ra, -8\n"
-	"	li a0, 1\n"   // EXIT_LINK
-	"	j t386_jit_exit\n"
 	// a dead block's guarded entry (jit_invalidate): lui ra / jalr ra here in place of its first two words
 	"	.globl t386_jit_dead_exit\n"
 	"t386_jit_dead_exit:\n"
@@ -567,7 +560,6 @@ void t386_jit_cpwr1(void), t386_jit_cpwr2(void), t386_jit_cpwr4(void);
 void t386_jit_cpwn1(void), t386_jit_cpwn2(void), t386_jit_cpwn4(void);
 void t386_jit_cpsh2(void), t386_jit_cpsh4(void);
 void t386_jit_cpop2(void), t386_jit_cpop4(void);
-void t386_jit_link_exit(void);
 void t386_jit_dead_exit(void);
 void t386_jit_leave(void), t386_jit_leave_f(void);
 
@@ -593,7 +585,8 @@ enum { JM_CODE16 = 1, JM_PROTECTED = 2, JM_STACK16 = 4, JM_IO = 8 /* IN and OUT 
 		       added. A block left when one gets another base: jit_h_ldseg, jit_after; links: same mode only */ };
 
 typedef struct JitLink {        // an exit of some block jumping straight into this one
-	u32 *slot;              // the exit (three words)
+	u32 *slot;              // the exit (two words: jt_link_exit_cs)
+	u32 *rt;                // ... and the routine it called before (jit_t_lexit, the copy it reached)
 	struct JitLink *next;
 } JitLink;
 
@@ -604,6 +597,7 @@ typedef struct JitBlock {
 	u8 dead;                // invalidated (its code stays until the cache is emptied)
 	u8 checked;             // self-checking (self-modifying code: see jit_translate), not invalidated by writes
 	u8 fails;               // ... and how often its first instruction was found changed
+	u8 nsegs;               // protected mode: the segments it checks on entry aren't null (JIT_NULLSEGS)
 	u8 guarded;             // dead, its entry a jump to t386_jit_dead_exit and the links into it kept (jit_revive)
 	u8 crossing;            // with paging, its last instruction runs on into the next page, which (as found then)
 	                        // lies after its page in RAM: jit_crossing_ok
@@ -926,9 +920,12 @@ static void jit_rt_save(void);
 static void jit_make_vga_writes(void);
 static void jit_make_shared(void);
 static u32 *jit_r_ijc, *jit_r_stop, *jit_r_interp, *jit_r_callc;   // the shared routines blocks jump to (jit_make_shared)
+static u32 *jit_r_cf, *jit_r_cond;   // ... and call: CF, a condition, of flags not known in the block (jt_cf, jt_cond)
 static u32 *jit_r_tlb[2][3], *jit_r_tlbs[6][2][3];   // (jit_r_tlbs: the segment's base added to t0 first)
 static u32 *jit_t_prd[3], *jit_t_pwr[2][3], *jit_t_prmw[3], *jit_t_leave, *jit_t_leave_f;   // (trampolines: jit_tramp)
 static u32 *jit_t_exit[5];   // leave with a reason, the x86 address in the word after the call (jt_exit)
+static u32 *jit_t_lexit;     // ... EXIT_LINK, a linkable exit not linked yet (jt_link_exit_cs)
+static u32 *jit_t_bexit;     // ... EXIT_BUDGET at the block's start (its stub, one word: the dispatcher finds the address)
 static u32 *jit_t_cprd[3][32], *jit_t_cpwr[2][3][32];   // the compact stubs' routines, by size and register
 static u32 *jit_r_push[2][2][9];   // with paging, a push (jt_push_call): 16-bit stack or not, 2 or 4 bytes, of a0, s1-s8
 static u32 *jit_r_pop[2][2][18];   // ... a pop (jt_pop_call): into a0, a1, s1-s8, or (2 bytes) the low half of s1-s8
@@ -1042,12 +1039,18 @@ static JitBlock *jit_find(uword lin, uword cs_base, u8 mode, uword phys)
 }
 
 // Patch an exit (two instructions at slot) to jump to target.
+// A linkable exit (two words: jal ra to jit_t_lexit, the x86 address) now a jump to target: a jal if it is near
+// enough (the address stays), else auipc / jalr in both words
 static void jit_patch_jump(u32 *slot, const u32 *target)
 {
 	int off = (int) ((const u8 *) target - (const u8 *) slot);
-	s32 lo = (s32) ((u32) off << 20) >> 20;
-	slot[0] = ((u32) off - (u32) lo) | (u32) T6 << 7 | 0x17;   // auipc t6, hi
-	slot[1] = RV_I(lo, T6, 0, X0, 0x67);                       // jalr x0, lo(t6)
+	if (off >= -(1 << 20) && off < (1 << 20)) {
+		slot[0] = rv_jal(off, X0);
+	} else {
+		s32 lo = (s32) ((u32) off << 20) >> 20;
+		slot[0] = ((u32) off - (u32) lo) | (u32) T6 << 7 | 0x17;   // auipc t6, hi
+		slot[1] = RV_I(lo, T6, 0, X0, 0x67);                       // jalr x0, lo(t6)
+	}
 	t386_jit_sync(slot, 8);
 	JIT_SUM_OF(slot);
 }
@@ -1140,15 +1143,13 @@ static void jit_batch_end(void)
 	jit_batch_n = 0;
 }
 
-// Every jump into b back to its stub (t386_jit_link_exit), and its link for another
+// Every jump into b back to its exit (a jal to jit_t_lexit, the x86 address), and its link for another
 static void jit_unlink_into(JitBlock *b)
 {
-	for (JitLink *l = b->links, *next; l; l = next) {   // back to t386_jit_link_exit, and the link for another
+	for (JitLink *l = b->links, *next; l; l = next) {   // back to jit_t_lexit, and the link for another
 		next = l->next;
-		u32 t = (u32) (uintptr_t) t386_jit_link_exit;
-		s32 lo = (s32) (t << 20) >> 20;
-		l->slot[0] = (t - (u32) lo) | (u32) RA << 7 | 0x37;   // lui ra
-		l->slot[1] = RV_I(lo, RA, 0, RA, 0x67);               // jalr ra, lo(ra)
+		l->slot[0] = rv_jal((int) ((u8 *) l->rt - (u8 *) l->slot), RA);
+		l->slot[1] = b->lin - b->cs_base;   // (its x86 address: overwritten by a far jump)
 		t386_jit_sync(l->slot, 8);
 		JIT_SUM_OF(l->slot);
 		l->next = jit_link_free;
@@ -1596,7 +1597,11 @@ static uword jt_phys_off;   // the block's physical address - its linear address
 static uword jt_lin;   // the block's linear address
 static int jit_interp_reason;   // jit_h_interp's verdict when it stops a block
 static bool jit_exception;      // ... and an exception is to be delivered
-static unsigned jit_nullsegs_now;
+// The segments null now (fast_nullsegs), which blocks check on entry against those they use: a byte of the CPU state,
+// in the padding after code16 (tiny386 never writes it), so the check reads it from s0 (no address to build there)
+#define JIT_NS_OFF (CPU_OFF(code16) + 1)
+_Static_assert(offsetof(CPUI386, sp_mask) >= offsetof(CPUI386, code16) + 2, "a spare byte after code16");
+#define JIT_NULLSEGS(cpu) (((u8 *) (cpu))[JIT_NS_OFF])
 
 static int jt_pf, jt_pf_bits;
 static bool jt_pf_stored;
@@ -1643,7 +1648,7 @@ static void jt_ijc_exit(int csreg);
 // another page goes through the indirect jump cache (links stay within a page). cs_base: CS's base there (a far JMP
 // or CALL's new one: with the block's, a far call under a memory manager's paging looked up the target's offset in
 // the old code segment, and ran whatever block was there)
-static void jt_link_exit_cs(uword eip, uword cs_base)   // (the slot: lui ra / jalr ra to t386_jit_link_exit, the x86 address)
+static void jt_link_exit_cs(uword eip, uword cs_base)   // (the slot: jal ra to jit_t_lexit, the x86 address)
 {
 	if ((jt_mode & JM_PAGED) && (cs_base + eip) >> 12 != jt_lin >> 12) {
 		e_li(A1, eip);
@@ -1655,7 +1660,7 @@ static void jt_link_exit_cs(uword eip, uword cs_base)   // (the slot: lui ra / j
 		}
 		return;
 	}
-	e_call_abs((const void *) t386_jit_link_exit);
+	E(rv_jal((int) ((u8 *) jit_t_lexit - (u8 *) jp), RA));   // (the routines' copy is in reach: jit_translate)
 	E(eip);
 }
 
@@ -2265,7 +2270,7 @@ static void jt_cf(int d)
 		e_or(d, d, A6);
 		break;
 	case PF_LOGIC: e_mv(d, X0); break;
-	case PF_INC: case PF_DEC: case PF_SHL: case PF_SHR: case PF_SAR: e_mv(d, F_CF); break;
+	case PF_INC: case PF_DEC: case PF_SHL: case PF_SHR: case PF_SAR: if (d != F_CF) e_mv(d, F_CF); break;
 	case PF_NEG: e_sltu(d, X0, F_DST); break;
 	case PF_IMUL16:
 		jt_sext(A6, F_DST, 16);
@@ -2277,20 +2282,10 @@ static void jt_cf(int d)
 		e_xor(d, A6, F_CF);
 		e_sltu(d, X0, d);
 		break;
-	default: {   // in cpu->cc: from cpu->flags unless CF is lazy
-		e_lw(T6, R_CPU, CPU_OFF(cc.mask));
-		e_andi(T6, T6, CF);
-		u32 *lazy = e_branch(BNE, T6, X0);
-		e_lw(T6, R_CPU, CPU_OFF(flags));
-		e_andi(d, T6, 1);
-		u32 *done = e_jump();
-		j_bind(lazy, jp);
-		e_mv(A0, R_CPU);
-		e_call((const void *) jit_h_cf);
-		e_mv(d, A0);
-		j_bind(done, jp);
+	default:   // in cpu->cc: from cpu->flags unless CF is lazy (a shared routine)
+		e_call_near(jit_r_cf);
+		if (d != T6) e_mv(d, T6);
 		break;
-	}
 	}
 }
 
@@ -2298,11 +2293,10 @@ static void jt_cf(int d)
 static void jt_cond(int c, int d)
 {
 	int k = jt_pf, bits = jt_pf_bits & 0xff;
-	if (k <= PF_DEAD) {
-		e_mv(A0, R_CPU);
+	if (k <= PF_DEAD) {   // (a shared routine)
 		e_li(A1, c);
-		e_call((const void *) jit_h_cond);
-		e_mv(d, A0);
+		e_call_near(jit_r_cond);
+		if (d != A0) e_mv(d, A0);
 		return;
 	}
 	switch (c >> 1) {
@@ -2938,10 +2932,11 @@ static int jit_h_ldseg(CPUI386 *cpu, int s, uword sel)   // (s | JM_FLAT << 8: f
 		cpu->seg[s] = was;
 		return 1;
 	}
-	jit_nullsegs_now = fast_nullsegs(cpu);
+	JIT_NULLSEGS(cpu) = fast_nullsegs(cpu);
 	return 0;
 }
 
+static long jit_stat_nulled;   // the dispatcher found a block using a null segment: the interpreter
 static long jit_stat_ileave[3];   // jit_h_interp left the block: for another mode; SS or a null segment; a jump
 static u8 jit_run_mode;          // the mode of the blocks running (they reach only blocks of their JM_FLAT)
 
@@ -3027,8 +3022,8 @@ static int jit_after(CPUI386 *cpu, const struct JitBefore *b, bool ok, uword nex
 		if ((jit_run_mode & JM_FLAT) && (cpu->seg[SEG_DS].base | cpu->seg[SEG_ES].base))
 			return jit_stat_ileave[0]++, 1;   // (as for another mode)
 		unsigned ns = fast_nullsegs(cpu);
-		if (ns & ~jit_nullsegs_now) return jit_stat_ileave[1]++, 1;   // one now null: its accesses fault
-		jit_nullsegs_now = ns;                  // (16-bit protected-mode code loads ES and DS all the time)
+		if (ns & ~JIT_NULLSEGS(cpu)) return jit_stat_ileave[1]++, 1;   // one now null: its accesses fault
+		JIT_NULLSEGS(cpu) = ns;                 // (16-bit protected-mode code loads ES and DS all the time)
 	}
 	if (cpu->next_ip != next || cpu->seg[SEG_CS].base != b->cs_base || cpu->seg[SEG_CS].sel != b->cs_sel)
 		return jit_stat_ileave[2]++, 2;   // a jump (far CALL, RETF, ...) in the same mode: on through the indirect jump cache
@@ -3191,6 +3186,15 @@ static void jit_make_shared(void)
 		jit_t_exit[r] = at;
 	}
 	jit_t_leave_f = jit_tramp((const void *) t386_jit_leave_f);
+	jit_t_bexit = jp;   // (a2: the stub; a1 isn't the address, the block's start: the dispatcher sets it)
+	e_addi(A2, RA, -4);
+	e_li(A0, EXIT_BUDGET);
+	jit_tramp((const void *) t386_jit_exit);
+	jit_t_lexit = jp;   // (the exit: the jal before the x86 address)
+	e_lw(A1, RA, 0);
+	e_addi(A2, RA, -4);
+	e_li(A0, EXIT_LINK);
+	jit_tramp((const void *) t386_jit_exit);
 	// the compact stubs' routines (jt_stub_compact), by size and register (not x0-x4, a6): a read's moves the value
 	// from t6 and goes on at the stub's resume, a write's moves the value to t6
 	static void (*const cprd[3])(void) = { t386_jit_cprd1, t386_jit_cprd2, t386_jit_cprd4 };
@@ -3285,6 +3289,39 @@ static void jit_make_shared(void)
 		}
 	}
 
+	// jit_r_cf: t6 = CF (0/1) of the flags in cpu->cc and cpu->flags (jt_cf, when the block doesn't hold them); keeps
+	// every other register but ra
+	jit_r_cf = jp;
+	e_lw(T6, R_CPU, CPU_OFF(cc.mask));
+	e_andi(T6, T6, CF);
+	{
+		u32 *lazy = e_branch(BNE, T6, X0);
+		e_lw(T6, R_CPU, CPU_OFF(flags));
+		e_andi(T6, T6, 1);
+		e_jalr(X0, RA, 0);
+		j_bind(lazy, jp);
+	}
+	e_addi(SP, SP, -16);
+	e_sw(RA, SP, 12);
+	e_sw(A0, SP, 8);
+	e_mv(A0, R_CPU);
+	e_call((const void *) jit_h_cf);
+	e_mv(T6, A0);
+	e_lw(A0, SP, 8);
+	e_lw(RA, SP, 12);
+	e_addi(SP, SP, 16);
+	e_jalr(X0, RA, 0);
+	// jit_r_cond: a0 = condition a1 (Jcc's low nibble, 0/1) of those flags (jt_cond); keeps every other register but
+	// ra and t6
+	jit_r_cond = jp;
+	e_addi(SP, SP, -16);
+	e_sw(RA, SP, 12);
+	e_mv(A0, R_CPU);
+	e_call((const void *) jit_h_cond);
+	e_lw(RA, SP, 12);
+	e_addi(SP, SP, 16);
+	e_jalr(X0, RA, 0);
+
 	// jit_r_callc: as jit_r_interp, for the C function in t6 (through t386_jit_thunk), with a1-a5 its arguments
 	jit_r_callc = jp;
 	e_addi(SP, SP, -16);
@@ -3321,8 +3358,8 @@ static u32 *jit_x87_free, *jit_x87_end;   // its pool for the x87 routines (jit_
 static struct { u32 key; u32 *code; } jit_x87_memo[JIT_X87_MEMO];   // its routines (key 0: none)
 static u32 *jit_rt_copy[8], jit_rt_bytes;   // (t386_jit_block_at) the copies, the first first; a copy's size
 static int jit_rt_copies;
-#define JIT_RT(X) X(jit_fstore) X(jit_vga_wr) X(jit_r_ijc) X(jit_r_stop) X(jit_r_interp) X(jit_r_callc) X(jit_r_tlb) X(jit_r_tlbs) X(jit_t_prd) \
-		  X(jit_t_pwr) X(jit_t_prmw) X(jit_t_leave) X(jit_t_leave_f) X(jit_t_exit) X(jit_t_cprd) X(jit_t_cpwr) X(jit_r_push) X(jit_r_pop) X(jit_rt_at) X(jit_x87_free) X(jit_x87_end)
+#define JIT_RT(X) X(jit_fstore) X(jit_vga_wr) X(jit_r_ijc) X(jit_r_stop) X(jit_r_interp) X(jit_r_callc) X(jit_r_cf) X(jit_r_cond) X(jit_r_tlb) X(jit_r_tlbs) X(jit_t_prd) \
+		  X(jit_t_pwr) X(jit_t_prmw) X(jit_t_leave) X(jit_t_leave_f) X(jit_t_exit) X(jit_t_lexit) X(jit_t_bexit) X(jit_t_cprd) X(jit_t_cpwr) X(jit_r_push) X(jit_r_pop) X(jit_rt_at) X(jit_x87_free) X(jit_x87_end)
 #define JIT_RT_MEMBER(v) __typeof__(v) v;
 static struct { JIT_RT(JIT_RT_MEMBER) } jit_rt_first;
 static void jit_rt_save(void)
@@ -3525,6 +3562,23 @@ static unsigned jt_segs_used(const JIns *in)
 		return 1 << SEG_ES | (in->op <= 0xa5 ? 1 << (in->seg >= 0 ? in->seg : SEG_DS) : 0);
 	}
 	if (in->has_modrm && in->mod != 3 && in->kind != K_LEA) return 1 << (in->seg >= 0 ? in->seg : in->dseg);
+	return 0;
+}
+
+// The segment an instruction loads (jt_seg_load): after it, in the block, it isn't null (a null selector leaves the
+// block before the instruction, jit_h_ldseg), so the entry check leaves out the segments a block loads before using
+// them (16-bit protected-mode code: LES BX,[BP+6] / MOV AX,ES:[BX] with ES null on entry)
+static unsigned jt_seg_loaded(const JIns *in)
+{
+	const int b = in->op;
+	switch (in->kind) {
+	case K_POPSEG:
+		return 1u << (in->two ? (b == 0xa1 ? SEG_FS : SEG_GS) : b >> 3);
+	case K_MOVSEG:
+		return b == 0x8e ? 1u << in->reg : 0;
+	case K_LDSEG:
+		return 1u << (in->two ? (b == 0xb4 ? SEG_FS : SEG_GS) : b == 0xc4 ? SEG_ES : SEG_DS);
+	}
 	return 0;
 }
 
@@ -4410,13 +4464,18 @@ static JIT_SMALL void jt_emit(const JIns *in)
 	}
 	case K_MOV:
 		if (b >= 0xb0 && b <= 0xb7) { jt_imm(in, T2, in->imm); jt_set_r(b & 7, T2, 8, true); break; }
-		if (b >= 0xb8 && b <= 0xbf) { jt_imm(in, T2, in->imm); jt_set_r(b & 7, T2, bits, true); break; }
+		if (b >= 0xb8 && b <= 0xbf) {   // (32 bits: into the register itself, as the loads and stores below)
+			if (bits == 32) jt_imm(in, jg[b & 7], in->imm);
+			else { jt_imm(in, T2, in->imm); jt_set_r(b & 7, T2, bits, true); }
+			break;
+		}
 		if (b >= 0xa0 && b <= 0xa3) {
 			int sz = (b & 1) ? bits : 8;
 			int seg = in->seg >= 0 ? in->seg : SEG_DS;
 			e_li(T0, in->imm);
 			if (jt_based(seg)) { e_lw(T1, R_CPU, SEG_BASE_OFF(seg)); e_add(T0, T0, T1); }
-			if (b < 0xa2) { jt_load(T2, sz / 8); jt_set_r(0, T2, sz, true); }
+			if (sz == 32) { if (b < 0xa2) jt_load(jg[0], 4); else jt_store(jg[0], 4); }
+			else if (b < 0xa2) { jt_load(T2, sz / 8); jt_set_r(0, T2, sz, true); }
 			else { jt_get_r(T2, 0, sz); jt_store(T2, sz / 8); }
 			break;
 		}
@@ -4424,6 +4483,10 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		if (b == 0xc6 || b == 0xc7) { jt_imm(in, T2, in->imm); jt_put_e(in, T2, bits, false, true); }
 		else if ((b == 0x89 || b == 0x8b) && in->mod == 3 && bits == 32)   // register to register: one move
 			e_mv(jg[b == 0x89 ? in->rm : in->reg], jg[b == 0x89 ? in->reg : in->rm]);
+		else if (bits == 32) {   // with memory: loaded into the register, or stored from it, directly
+			if (b == 0x89) jt_put_e(in, jg[in->reg], 32, false, true);
+			else jt_get_e(in, jg[in->reg], 32, false);
+		}
 		else if (b == 0x88 || b == 0x89) { jt_get_r(T2, in->reg, bits); jt_put_e(in, T2, bits, false, true); }
 		else { jt_get_e(in, T2, bits, false); jt_set_r(in->reg, T2, bits, true); }
 		break;
@@ -4443,6 +4506,14 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		int r = -1;
 		if (b >= 0x40 && b <= 0x4f) { dec = b >= 0x48; r = b & 7; }
 		else { dec = in->reg == 1; if (b == 0xfe) bits = 8; }
+		if (r >= 0 && bits == 32) {   // a 32-bit register: in place, CF straight into F_CF (nothing can leave here)
+			if (live) jt_cf(F_CF);
+			e_addi(jg[r], jg[r], dec ? -1 : 1);
+			if (!live) { jt_pf = PF_DEAD; break; }
+			e_mv(F_DST, jg[r]);
+			jt_set_pf(dec ? PF_DEC : PF_INC, bits);
+			break;
+		}
 		if (live) jt_cf(A3);   // INC and DEC keep CF (into F_CF below: the operand may still send the instruction
 		                       // to the interpreter, which needs the flags as they were)
 		if (r >= 0) jt_get_r(T2, r, bits);
@@ -4602,6 +4673,11 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		break;
 	case K_MOVX: {
 		int sb = (b & 1) ? 16 : 8;
+		if (bits == 32) {   // into the register itself (no move after)
+			jt_get_e(in, jg[in->reg], sb, false);
+			if (b >= 0xbe) jt_sext(jg[in->reg], jg[in->reg], sb);
+			break;
+		}
 		jt_get_e(in, T2, sb, false);
 		if (b >= 0xbe) { jt_sext(T2, T2, sb); jt_set_r(in->reg, T2, bits, false); }
 		else jt_set_r(in->reg, T2, bits, true);
@@ -5111,9 +5187,8 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		jt_link_exit(jt_target(in, disp));
 		if (other) {
 			j_bind(other, jp);
-			e_mv(A0, R_CPU);
 			e_mv(A1, T1);
-			e_call((const void *) jit_h_cond);
+			e_call_near(jit_r_cond);
 			u32 *taken2 = e_branch(BNE, A0, X0);
 			jt_link_exit(in->eip + in->len);
 			j_bind(taken2, jp);
@@ -5581,9 +5656,8 @@ static void jt_emit_stubs(void)
 			jt_flags_store();
 			jt_exit(EXIT_STOP, st->eip);
 			break;
-		case STUB_BUDGET:
-			if (st->size) e_addi(R_BUDGET, R_BUDGET, st->size);
-			jt_exit(EXIT_BUDGET, st->eip);
+		case STUB_BUDGET:   // (the block's entry: one word, jit_t_bexit)
+			e_call_near(jit_t_bexit);
 			break;
 		case STUB_STOP: {   // jit_h_interp stopped the block: its reason, at cpu->next_ip
 			if (st->refund > 1) e_addi(R_BUDGET, R_BUDGET, st->refund - 1);   // the rest wasn't done
@@ -5765,7 +5839,7 @@ static JIT_SMALL JitBlock *jit_translate_n(CPUI386 *cpu, uword eip, uword lin, u
 		jt_ins[i].fl_live = live;
 		if (jt_ins[i].fl == FL_WRITE) live = false;
 		if (jt_ins[i].fl == FL_READ || jt_ins[i].may_exit) live = true;
-		segs |= jt_segs_used(&jt_ins[i]);
+		segs = (segs & ~jt_seg_loaded(&jt_ins[i])) | jt_segs_used(&jt_ins[i]);
 	}
 	// pass 3: emit
 	if (!jt_stubs && !(jt_stubs = (JStub *) t386_jit_alloc(sizeof(JStub) * JIT_MAX_STUBS))) return NULL;
@@ -5797,15 +5871,16 @@ static JIT_SMALL JitBlock *jit_translate_n(CPUI386 *cpu, uword eip, uword lin, u
 	st->size = 0;                       // interrupts come a few instructions later, and no instructions are left
 	st->eip = eip;                      // for the interpreter)
 	st->at = e_branch(BGE, X0, R_BUDGET);
+	// null selectors fault: the interpreter. The same exit as for the budget, and the dispatcher sends a block
+	// whose segments are null to the interpreter (SS is never null in protected mode: loading a null one faults)
+	const unsigned nsegs = (mode & JM_PROTECTED) ? segs & ~(1u << SEG_SS) : 0;
+	if (nsegs) {
+		e_lbu(T0, R_CPU, JIT_NS_OFF);
+		e_andi(T0, T0, nsegs);
+		st->more[0] = e_branch(BNE, T0, X0);
+	}
 	e_addi(R_BUDGET, R_BUDGET, -n);
 	jt_refund = n;   // (none of it done, if it leaves at once)
-	if ((mode & JM_PROTECTED) && segs) {   // null selectors fault: the interpreter
-		e_lw_abs(T0, &jit_nullsegs_now);
-		e_andi(T0, T0, segs);
-		st = jt_stub(STUB_EXIT);
-		st->eip = eip;
-		st->at = e_branch(BNE, T0, X0);
-	}
 	for (int i = 0; i < n; i++) {
 		jt_refund = n - i;
 		jt_cur_eip = jt_ins[i].eip;
@@ -5855,6 +5930,7 @@ static JIT_SMALL JitBlock *jit_translate_n(CPUI386 *cpu, uword eip, uword lin, u
 	b->phys = phys;
 	b->cs_base = cpu->seg[SEG_CS].base;
 	b->mode = mode;
+	b->nsegs = nsegs;
 	b->nbytes = bytes;
 	b->born = cpu->cycle;
 	memcpy(b->dyn, dyn, sizeof dyn);
@@ -5940,7 +6016,8 @@ void t386_jit_ops_report(char *buf, int len)   // the opcodes run in place most
 // 1 and its address, size and kind; 2 for the routines blocks call (any copy), *lin which (t386_jit_rt_names) and
 // *nbytes the instruction in them; 0 if pc isn't in the cache.
 const char *const t386_jit_rt_names[] = { "flags stores", "VGA writes", "indirect jumps (jit_r_ijc)", "jit_r_stop",
-	"TLB lookups (jit_r_tlb)", "to paging's slow paths", "to the exits", "jit_r_callc", "jit_r_interp",
+	"TLB lookups (jit_r_tlb)", "to paging's slow paths", "to the exits", "flags not in the block (jit_r_cf, jit_r_cond)",
+	"jit_r_callc", "jit_r_interp",
 	"x87 (jit_x87_routine_of)" };
 int t386_jit_block_at(uint32_t pc, uword *lin, int *nbytes, int *checked, int *dead)
 {
@@ -5951,7 +6028,7 @@ int t386_jit_block_at(uint32_t pc, uword *lin, int *nbytes, int *checked, int *d
 		const u32 *const first = jit_rt_first.jit_rt_at, *const at = first + off / 4;   // (the copies are alike)
 		const u32 *const starts[] = { first, jit_rt_first.jit_vga_wr[0][0], jit_rt_first.jit_r_ijc,
 			jit_rt_first.jit_r_stop, jit_rt_first.jit_r_tlb[0][0], jit_rt_first.jit_t_prd[0],
-			jit_rt_first.jit_t_leave, jit_rt_first.jit_r_callc, jit_rt_first.jit_r_interp,
+			jit_rt_first.jit_t_leave, jit_rt_first.jit_r_cf, jit_rt_first.jit_r_callc, jit_rt_first.jit_r_interp,
 			jit_rt_first.jit_x87_free };   // (that one: where the pool begins, the copies' saved before any)
 		*lin = 0;
 		for (unsigned k = 1; k < sizeof starts / sizeof *starts; k++)
@@ -6060,7 +6137,7 @@ void t386_jit_report(char *buf, int len)
 		 "emptyings, %ld links, %ld instructions to the interpreter between blocks, %.1f instructions per block, "
 		 "%.0f bytes of code per instruction; exits: %ld jump, %ld link, %ld interp, %ld budget, %ld stop; "
 		 "%ld runs of self-modifying code (the last at %08x); %u TLB flushes; interpreted instructions left blocks "
-		 "%ld times for another mode, %ld for SS or a null segment, %ld by jumps; protected mode: %ld segment loads, far %ld "
+		 "%ld times for another mode, %ld for SS or a null segment, %ld by jumps; %ld blocks used a null segment (interpreted); protected mode: %ld segment loads, far %ld "
 		 "CALL %ld JMP %ld RETF %ld IRET %ld INT; %ld x87 instructions; %ld block lookups (%ld found), %.1f blocks looked at each",
 		 t386_jit_enabled ? "on" : "off",
 		 jit_stat_blocks, jit_stat_translated, jit_stat_revived, jit_nblocks,
@@ -6069,7 +6146,7 @@ void t386_jit_report(char *buf, int len)
 		 jit_generation, jit_stat_links, jit_stat_interp, made ? (double) jit_stat_ins / made : 0.0,
 		 jit_stat_ins ? (double) jit_stat_bytes / jit_stat_ins : 0.0, jit_stat_exit[0], jit_stat_exit[1],
 		 jit_stat_exit[2], jit_stat_exit[3], jit_stat_exit[4], jit_stat_volatile, jit_last_volatile, ftlb_flushes,
-		 jit_stat_ileave[0], jit_stat_ileave[1], jit_stat_ileave[2], jit_stat_pm[0], jit_stat_pm[1], jit_stat_pm[2],
+		 jit_stat_ileave[0], jit_stat_ileave[1], jit_stat_ileave[2], jit_stat_nulled, jit_stat_pm[0], jit_stat_pm[1], jit_stat_pm[2],
 		 jit_stat_pm[3], jit_stat_pm[4], jit_stat_pm[5], jit_stat_fpu, jit_stat_finds, jit_stat_found,
 		 jit_stat_finds ? (double) jit_stat_probes / jit_stat_finds : 0.0);
 }
@@ -6247,12 +6324,14 @@ static bool jit_exec_in(CPUI386 *cpu, int stepcount)
 		}
 		JIT_TR(b ? TR_BLOCK : cold ? TR_COLD : TR_INTERP, lin, cpu->seg[SEG_CS].sel << 16 | (eip & 0xffff),
 		       b ? (u32) (uintptr_t) b->code : cpu->gprx[4].r32);
+		const bool nulled = b && (b->nsegs & fast_nullsegs(cpu));   // a segment it uses is null: the interpreter,
+		if (nulled) b = NULL, jit_stat_nulled++;                   // which faults
 		if (b) {
 			if (b->xentry && (mode & JM_PAGED)) {   // (found for its linear address with this TLB: jit_xentry)
 				b->xepoch = ftlb_flushes;
 				b->xmap = (u32) (uintptr_t) ftlb;
 			}
-			jit_nullsegs_now = fast_nullsegs(cpu);
+			JIT_NULLSEGS(cpu) = fast_nullsegs(cpu);
 			jit_run_mode = mode;
 			jit_exception = false;
 			jit_stat_blocks++;
@@ -6260,6 +6339,10 @@ static bool jit_exec_in(CPUI386 *cpu, int stepcount)
 			// a mode only reach each other, and an interpreted instruction that changes it leaves, jit_h_interp)
 			int reason = t386_jit_enter(cpu, b->code, budget, cpu->phys_mem,
 						    mode & JM_PAGED ? (u8 *) ftlb : t386_pagemap);
+			if (reason == EXIT_BUDGET) {   // at the start of the block whose entry left (jit_t_bexit: maybe one
+				const JitBlock *e = jit_block_of(jit_link_slot);   // linked to from b)
+				cpu->next_ip = e->lin - e->cs_base;
+			}
 			cpu->cycle += budget - jit_budget_left;
 			budget = jit_budget_left;
 			jit_stat_exit[reason]++;
@@ -6305,6 +6388,7 @@ static bool jit_exec_in(CPUI386 *cpu, int stepcount)
 					JitLink *l = jit_link_free ? jit_link_free : &jit_links[jit_nlinks++];
 					if (l == jit_link_free) jit_link_free = l->next;
 					l->slot = jit_link_slot;
+					l->rt = jit_link_slot + rv_jal_off(jit_link_slot[0]) / 4;
 					l->next = t->links;
 					t->links = l;
 					jit_patch_jump(jit_link_slot, dest);
@@ -6322,11 +6406,14 @@ static bool jit_exec_in(CPUI386 *cpu, int stepcount)
 					jit_check_fail_lin = -1;
 				}
 				break;
-			case EXIT_BUDGET:   // none left for this step
+			case EXIT_BUDGET:   // none left for this step (or some left: its segments are null, see above)
+				if (budget > 0) break;
 				return true;
 			case EXIT_STOP:
 				return !jit_exception;
 			}
+		} else if (nulled) {
+			interp = 1;
 		} else if (cold) {   // not reached often enough yet: the interpreter, for a few instructions
 			interp = JIT_COLD_RUN;
 		} else {   // nothing to translate here: the interpreter; a stretch of self-modifying code at once

@@ -14,6 +14,8 @@
 
 extern "C" FILE* t386_ide_image(IDEIFState* s, int drive);
 #include "src/t386_raw.h"
+extern "C" int t386_ide_cd_attach(IDEIFState* s, int drive, const char* path);
+extern "C" int (*t386_raw_runs_hook)(const char* path, T386Run** runs, uint32_t* nruns, uint32_t* sectors);
 
 // ---- raw access to the images (t386_ide.c) --------------------------------------------------------------------
 
@@ -26,7 +28,10 @@ struct SDHandle : fs::SDMMCFS {
 // Where a card file lies: its pieces on the card (*runs, heap_caps_malloc'ed, *nruns of them) and its size in
 // sectors; false if it isn't a plain file of whole sectors on the card, or lies in more than MAX_RUNS pieces.
 static constexpr uint32_t MAX_RUNS = 8192;   // (12 bytes each, in PSRAM)
+static uint32_t g_runs_ms;   // how long the last image_runs took (serial "loads")
 static bool image_runs(const char* path, T386Run*& runs, uint32_t& nruns, uint32_t& sectors) {
+  const int64_t t0 = esp_timer_get_time();
+  struct Took { int64_t t0; ~Took() { g_runs_ms = (uint32_t)((esp_timer_get_time() - t0) / 1000); } } took{t0};
   runs = nullptr;
   nruns = 0;
   if (strncmp(path, "/sdcard/", 8) != 0) return false;
@@ -45,11 +50,14 @@ static bool image_runs(const char* path, T386Run*& runs, uint32_t& nruns, uint32
     sectors = (uint32_t)(size / 512);
     uint32_t cap = 0;
     // each cluster in turn (a seek forward goes on from the cluster before): after the one before it on the card,
-    // or a new piece
+    // or a new piece. The seek goes a sector into the cluster (onto it: FatFs leaves a seek to its very start on the
+    // one before), on a sector's start, so that FatFs only follows the chain: one off a sector's start read that
+    // sector into the file's buffer, a card command for every cluster (a 600 MB ISO took 13 s; the PC waits).
+    const FSIZE_t into = fs->csize > 1 ? 512 : 1;
     for (FSIZE_t off = 0; ok && off < size; off += bcs) {
       DWORD clust = fil->obj.sclust;
       if (off) {
-        ok = f_lseek(fil, off + 1) == FR_OK;
+        ok = f_lseek(fil, off + into) == FR_OK;
         clust = fil->clust;
       }
       if (!ok || clust < 2) { ok = false; break; }
@@ -84,14 +92,24 @@ static void disk_raw_setup(const PCConfig& conf) {
     Serial.println("disks: through FatFs (raw access off)");
     return;
   }
+  // read-only images (CD discs, as they are put in: t386_fopen) too, if whole sectors (raw reads stop at the last)
+  t386_raw_runs_hook = [](const char* path, T386Run** runs, uint32_t* nruns, uint32_t* sectors) -> int {
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size % 512) return 0;
+    return image_runs(path, *runs, *nruns, *sectors);
+  };
+  for (int i = 0; i < 4; ++i)   // the disc in the drive at the start, opened before this
+    if (conf.iscd[i] && t386_ide_cd_attach(i < 2 ? g_pc->ide : g_pc->ide2, i & 1, conf.disks[i]))
+      Serial.printf("cd%c: %s, raw access\n", 'a' + i, conf.disks[i]);
   for (int i = 0; i < 4; ++i) {
     FILE* f = t386_ide_image(i < 2 ? g_pc->ide : g_pc->ide2, i & 1);
     T386Run* runs;
     uint32_t nruns, n;
     if (!f) continue;
     if (image_runs(conf.disks[i], runs, nruns, n) && t386_raw_attach(f, SDHandle::card(), runs, nruns, n))
-      Serial.printf("disk hd%c: %s at card sector %u%s, raw access\n", 'a' + i, conf.disks[i], (unsigned)runs[0].card,
-                    nruns > 1 ? (String(", in ") + nruns + " pieces").c_str() : "");
+      Serial.printf("disk hd%c: %s at card sector %u%s, raw access (mapped in %u ms)\n", 'a' + i, conf.disks[i],
+                    (unsigned)runs[0].card, nruns > 1 ? (String(", in ") + nruns + " pieces").c_str() : "",
+                    (unsigned)g_runs_ms);
     else
       Serial.printf("disk hd%c: %s: through FatFs (slower)\n", 'a' + i, conf.disks[i]);
   }
