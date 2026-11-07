@@ -23,7 +23,15 @@
 //                  | sdbench (the SD card's raw read speed; reads only) | loads (the files loaded at the PC's start and
 //                  how long they took)
 #include <M5Unified.h>
+#ifndef T386_SD_SPI
+#define T386_SD_SPI 0
+#endif
+#if T386_SD_SPI
+#include <SD.h>
+#include <SPI.h>
+#else
 #include <SD_MMC.h>
+#endif
 #include <lgfx/v1/platforms/esp32p4/Panel_DSI.hpp>
 #include <driver/ppa.h>
 #include <esp_cache.h>
@@ -641,8 +649,15 @@ static void handle_serial() {
       if (!t386_load_log[0]) Serial.println("loads: none from the card");
       long pc_len, pc_used = t386_pcmalloc_used(&pc_len);
       Serial.printf("device state (pcmalloc, 640K-768K): %ld of %ld bytes used\n", pc_used, pc_len);
+#if T386_SD_SPI
+      Serial.println("raw access: unavailable with SPI; disk images use FatFs");
+#else
       Serial.printf("raw access: the last image mapped in %u ms\n", (unsigned)g_runs_ms);
+#endif
     } else if (line == "sdbench") {   // the card's raw read speed (src/t386_ide.c; reads only)
+#if T386_SD_SPI
+      Serial.println("sdbench: SDMMC raw benchmark unavailable with SPI");
+#else
       static char buf[900];
       t386_card_bench(buf, sizeof(buf));
       for (char* p = buf; *p; ) {
@@ -653,6 +668,7 @@ static void handle_serial() {
         if (!e) break;
         p = e + 2;
       }
+#endif
     } else if (line == "jit") {
       static char buf[900];
       t386_jit_report(buf, sizeof(buf));
@@ -1006,7 +1022,28 @@ static void display_task(void*) {
 
 // ---- machine setup ------------------------------------------------------------------------------------------
 
+#if T386_SD_SPI
+// Tab5 microSD SPI wiring (M5Stack's Tab5 pin map).
+static constexpr int SD_SPI_SCK_GPIO = 43;
+static constexpr int SD_SPI_MISO_GPIO = 39;
+static constexpr int SD_SPI_MOSI_GPIO = 44;
+static constexpr int SD_SPI_CS_GPIO = 42;
+static constexpr uint32_t SD_SPI_CLOCK_HZ = 4000000;
+static SPIClass g_sd_spi(FSPI);
+#endif
+
 static bool sd_mount() {
+#if T386_SD_SPI
+  // A card can retain SPI mode across a software reset. Stay in that mode rather than switching to SDMMC.
+  // Failure must not format the card or restart into the same failed mount.
+  g_sd_spi.begin(SD_SPI_SCK_GPIO, SD_SPI_MISO_GPIO, SD_SPI_MOSI_GPIO, SD_SPI_CS_GPIO);
+  const bool mounted = SD.begin(SD_SPI_CS_GPIO, g_sd_spi, SD_SPI_CLOCK_HZ, "/sdcard", 5, false);
+  if (!mounted) {
+    SD.end();
+    g_sd_spi.end();
+  }
+  return mounted;
+#else
   // SD_MMC slot 0 on the P4's fixed pins; the board variant powers the card (LDO channel 4)
   if (SD_MMC.begin("/sdcard", false, false, SDMMC_FREQ_HIGHSPEED)) return true;
   if (SD_MMC.begin("/sdcard", false, false, SDMMC_FREQ_DEFAULT)) return true;
@@ -1018,6 +1055,7 @@ static bool sd_mount() {
     tab5_restart();
   }
   return false;
+#endif
 }
 
 static bool file_exists(const char* path) {
@@ -1205,7 +1243,11 @@ void setup() {
   g_machine = g_prefs.getString("machine", "");   // (linux_install.h)
   show_status("Tab5 PC", "Starting...");
   const bool have_sd = sd_mount();
+#if T386_SD_SPI
+  if (have_sd) Serial.printf("SD card: %llu MB (SPI)\n", SD.cardSize() >> 20);
+#else
   if (have_sd) Serial.printf("SD card: %llu MB\n", SD_MMC.cardSize() >> 20);
+#endif
   else Serial.println("SD card: none");
   if (have_sd) install_mode_run();   // (an install asked for: done instead of a PC; the Tab5 restarts after)
   load_config(g_conf, have_sd);

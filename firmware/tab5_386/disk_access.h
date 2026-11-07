@@ -19,6 +19,12 @@ extern "C" int (*t386_raw_runs_hook)(const char* path, T386Run** runs, uint32_t*
 
 // ---- raw access to the images (t386_ide.c) --------------------------------------------------------------------
 
+#if T386_SD_SPI
+// The raw-sector hooks use SDMMC's card handle and driver. SPI uses the existing descriptor/FatFs fallback.
+static void disk_raw_setup(const PCConfig&) {
+  Serial.println("disks: through FatFs (SPI; raw access unavailable)");
+}
+#else
 // The card behind SD_MMC (a protected member, reached through a derived class).
 struct SDHandle : fs::SDMMCFS {
   static sdmmc_card_t* card() { return SD_MMC.*static_cast<sdmmc_card_t* fs::SDMMCFS::*>(&SDHandle::_card); }
@@ -114,6 +120,8 @@ static void disk_raw_setup(const PCConfig& conf) {
       Serial.printf("disk hd%c: %s: through FatFs (slower)\n", 'a' + i, conf.disks[i]);
   }
 }
+
+#endif
 
 static constexpr int64_t DISK_IDLE_MS = 30000;
 

@@ -50,6 +50,22 @@ pinned source instead (needs a gcc that can build 32-bit x86 code).
 ESP32-P4 chips come in two families: `esptool` reports "revision v1.x" for earlier ones (the default build) and
 v3.x for later ones: `CHIP=postv3 tools/build.sh upload`. A build for the wrong family does not start.
 
+### SPI SD card access
+
+SDMMC is the default. If another firmware has put the card into SPI mode, a software reset can leave it in that
+mode, and switching to SDMMC may fail. Build with SPI access to keep using the card without a power cycle:
+
+```sh
+DEFS=-DT386_SD_SPI=1 tools/build.sh
+```
+
+The same option works with `tools/build.sh upload [PORT]` and either `CHIP` setting. SPI uses the Tab5's microSD
+pins (SCK 43, MISO 39, MOSI 44, CS 42), at 4 MHz. Disk images use the descriptor/FatFs path; SDMMC's raw-sector
+mapping, read-ahead and prefetch are unavailable, so disk access is slower. `raw 1` does not enable them in this
+build, and `loads` and `sdbench` report that raw mapping and the SDMMC benchmark are unavailable. A failed
+SPI mount neither formats the card nor restarts the Tab5; the PC starts without disks, as it does when no card
+is present.
+
 ## First start: FreeDOS on an empty card
 
 1. Put an empty card in the Tab5 and switch it on. With nothing on the card, the settings panel opens with Wi-Fi
