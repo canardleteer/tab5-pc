@@ -109,11 +109,13 @@ static const uint8_t* nat_src(VGAState* s, uint32_t addr, uint32_t n) {
 }
 
 bool t386_vga_picture(VGAState* s, int* w, int* h) {
-    if (!(s->gr[0x06] & 1) && !vbe_enabled(s)) {   // text, as vga_text_refresh lays it out
-        const int cheight = (s->cr[9] & 0x1f) + 1, cwidth = !s->force_8dm && !(s->sr[1] & 0x01) ? 9 : 8;
+    if (!(s->gr[0x06] & 1) && !vbe_enabled(s)) {   // text, as vga_text_refresh lays it out: every dot twice at
+        // half the dot clock (SR01 bit 3: 40 columns), and all the scan lines the CRT controller shows (the last row
+        // cut where it falls)
+        const int cwidth = !s->force_8dm && !(s->sr[1] & 0x01) ? 9 : 8, dw = s->sr[0x01] & 0x08 ? 2 : 1;
         const int lines = s->cr[0x12] | ((s->cr[0x07] & 0x02) << 7) | ((s->cr[0x07] & 0x40) << 3);
-        *w = (s->cr[0x01] + 1) * cwidth;
-        *h = (lines + 1) / cheight * cheight;
+        *w = (s->cr[0x01] + 1) * cwidth * dw;
+        *h = lines + 1;
     } else {
         *w = s->last_gw;
         *h = s->last_gh;
