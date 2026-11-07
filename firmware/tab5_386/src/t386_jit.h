@@ -1542,7 +1542,8 @@ static bool jit_decode(const u8 *p, int max, bool code16, JIns *in)
 // how an instruction is translated
 enum {
 	K_INTERP,     // run in place by the fast path
-	K_REPSTR,     // REP MOVS, REP STOS: plain RAM in a page, forwards, by jit_h_repstr; else as K_INTERP
+	K_REPSTR,     // REP MOVS, STOS, LODS: plain RAM, forwards, a page at a time (jt_repstr); else as K_INTERP
+	K_REPCMP,     // REPE/REPNE CMPS, SCAS: the same way, by jit_h_repcmp (jt_repcmp)
 	K_NOP, K_ALU, K_TEST, K_MOV, K_LEA, K_INCDEC, K_PUSH, K_POP, K_XCHG, K_CBW, K_CWD, K_MOVX, K_SHIFT, K_NOTNEG,
 	K_SHXD, K_BT, K_IMUL, K_JCC, K_JMP, K_CALL, K_RET, K_LOOP, K_JMPI, K_CALLI, K_SETCC, K_MOVSEG, K_POPSEG, K_LDSEG, K_LEAVE,
 	K_CLD, K_STD, K_ADCSBB, K_ROT, K_SHIFTCL, K_MULDIV, K_IN, K_OUT, K_STR, K_FLAGOP, K_PUSHA, K_POPA, K_XLAT,
@@ -3471,10 +3472,11 @@ static void jt_classify(JIns *in, u8 mode, bool *ends)
 	case 0xe6: case 0xe7: case 0xee: case 0xef: if (mode & JM_IO) { in->kind = K_OUT; in->fl = FL_NONE; } return;
 	case 0xa4: case 0xa5: case 0xaa: case 0xab: case 0xac: case 0xad:
 		if (!in->rep) { in->kind = K_STR; in->fl = FL_NONE; }
-		else if (b <= 0xab && !(b >= 0xa6 && b <= 0xa9)) in->kind = K_REPSTR;   // (FL_READ, as run in place)
+		else in->kind = K_REPSTR;   // (FL_READ, as run in place)
 		return;
 	case 0xa6: case 0xa7: case 0xae: case 0xaf:
 		if (!in->rep) { in->kind = K_STR; in->fl = FL_WRITE; }
+		else in->kind = K_REPCMP;   // (FL_READ: a count of 0 leaves the flags; run in place, it reads them)
 		return;
 	case 0xf5: case 0xf8: case 0xf9: in->kind = K_FLAGOP; return;
 	case 0xfa: case 0xfb: if (mode & JM_IO) { in->kind = K_FLAGOP; in->fl = FL_NONE; } return;   // CLI, STI
@@ -3558,8 +3560,11 @@ static unsigned jt_segs_used(const JIns *in)
 		break;
 	case K_INTERP:
 		return 0;
-	case K_REPSTR:
-		return 1 << SEG_ES | (in->op <= 0xa5 ? 1 << (in->seg >= 0 ? in->seg : SEG_DS) : 0);
+	case K_REPSTR: case K_REPCMP: {   // MOVS, CMPS: both; STOS, SCAS: ES:(E)DI; LODS: seg:(E)SI
+		const unsigned src = 1 << (in->seg >= 0 ? in->seg : SEG_DS);
+		const u8 b = in->op;
+		return b >= 0xac && b <= 0xad ? src : b == 0xaa || b == 0xab || b >= 0xae ? 1 << SEG_ES : 1 << SEG_ES | src;
+	}
 	}
 	if (in->has_modrm && in->mod != 3 && in->kind != K_LEA) return 1 << (in->seg >= 0 ? in->seg : in->dseg);
 	return 0;
@@ -4067,49 +4072,84 @@ static u32 jit_h_div64(u32 lo, u32 hi, u32 d, u32 sgn)
 	return (u32) q;
 }
 
-// REP MOVS / STOS from translated code (K_REPSTR), when both sides are plain RAM within a page each and DF is clear:
-// bytes of elements of n (kind & 7) at host address d, from s (MOVS: element by element where they overlap with d
-// after s, as the CPU does, else as memcpy) or of the value s (kind & 0x100: STOS)
-static void jit_h_repstr(u8 *d, uintptr_t s, u32 bytes, u32 kind)
+// REP MOVS / STOS from translated code (K_REPSTR), a page's part at a time (both sides plain RAM, DF clear): bytes
+// of elements of n (kind & 7) at host address d, from s (MOVS: element by element where they overlap with d after
+// s, as the CPU does, else as memcpy) or of the value s (kind & 0x100: STOS). Returns bytes.
+static u32 jit_h_repstr(u8 *d, uintptr_t s, u32 bytes, u32 kind)
 {
 	const u32 n = kind & 7;
 	if (kind & 0x100) {
-		if (n == 1) { memset(d, (int) s, bytes); return; }
+		if (n == 1) { memset(d, (int) s, bytes); return bytes; }
 		for (u32 i = 0; i < bytes; i += n) memcpy(d + i, &s, n);   // (little-endian: the low n bytes)
-		return;
+		return bytes;
 	}
 	const u8 *src = (const u8 *) s;
-	if (d + bytes <= src || d >= src + bytes || d < src) { memmove(d, src, bytes); return; }   // (d before s: as forwards)
-	for (u32 i = 0; i < bytes; i += n) { u32 v; memcpy(&v, src + i, n); memcpy(d + i, &v, n); }
+	if (d + bytes <= src || d >= src + bytes || d < src) { memmove(d, src, bytes); return bytes; }   // (d before s:
+	for (u32 i = 0; i < bytes; i += n) { u32 v; memcpy(&v, src + i, n); memcpy(d + i, &v, n); }   // as forwards)
+	return bytes;
 }
 
-// the linear address of seg:(E)SI or (E)DI (reg 6 or 7) into d, and to slow (the K_REPSTR's) unless the bytes in a1
-// from it lie in one page of plain RAM (write: without translated code), not wrapping at 64 KB, and in real mode
-// below 1 MB (misaligned is fine: jit_h_repstr copies with memcpy). With paging, d is then its host address through
-// the fast path's TLB: a miss (not mapped yet, not RAM, or a write to a page with translated code: ftlb_miss gives
-// such pages no write entry) to slow
+// REPE / REPNE CMPS, SCAS from translated code (K_REPCMP), the same way: compares the elements of n (kind & 7) at
+// host address s (CMPS; SCAS, kind & 0x100: the value s) with those at d, at most bytes of them, until one pair is
+// unequal (REPE, kind & 0x200) or equal (REPNE). Returns the bytes compared; the last pair in jit_cmp_l (s's side),
+// jit_cmp_r, and jit_cmp_more 1 if the repeat goes on (no pair stopped it: the count decides)
+static u32 jit_cmp_l, jit_cmp_r, jit_cmp_more;
+static u32 jit_h_repcmp(const u8 *d, uintptr_t s, u32 bytes, u32 kind)
+{
+	const u32 n = kind & 7, mask = n == 4 ? 0xffffffff : n == 2 ? 0xffff : 0xff;
+	const bool scas = kind & 0x100, repe = kind & 0x200;
+	const u8 *src = (const u8 *) s;
+	u32 i = 0, l = (u32) s & mask, r;
+	bool eq;
+	do {
+		r = 0;
+		memcpy(&r, d + i, n);
+		if (!scas) { l = 0; memcpy(&l, src + i, n); }
+		i += n;
+		eq = l == r;
+	} while (eq == repe && i < bytes);
+	jit_cmp_l = l;
+	jit_cmp_r = r;
+	jit_cmp_more = eq == repe;
+	return i;
+}
+
+// a1 = min(a1, t0)
+static void jt_min_a1(void)
+{
+	u32 *k = e_branch(BGEU, T0, A1);
+	e_mv(A1, T0);
+	j_bind(k, jp);
+}
+
+// the linear address of seg:(E)SI or (E)DI (reg 6 or 7) into d, the bytes in a1 cut to what is left of its page
+// (and of its 64 KB with a 16-bit address: the next part starts at offset 0, as the CPU wraps), and to slow (the
+// K_REPSTR's) unless that page is plain RAM (write: without translated code), and in real mode below 1 MB
+// (misaligned is fine: jit_h_repstr copies with memcpy; a1 may come out no whole element, see jt_rep_parts). With
+// paging, d is then its host address through the fast path's TLB: a miss (not mapped yet, not RAM, or a write to a
+// page with translated code: ftlb_miss gives such pages no write entry) to slow
 static void jt_repstr_side(const JIns *in, int d, int reg, int seg, int n, bool write, u32 **slow, int *ns)
 {
 	const bool paged = jt_mode & JM_PAGED;
 	if (in->adsz16) {
 		jt_zext(d, jg[reg], 16);
-		e_add(T6, d, A1);
 		e_li(T0, 0x10000);
-		slow[(*ns)++] = e_branch(BLTU, T0, T6);
+		e_sub(T0, T0, d);
+		jt_min_a1();
 	} else {
 		e_mv(d, jg[reg]);
 	}
 	if (jt_based(seg)) { e_lw(T6, R_CPU, SEG_BASE_OFF(seg)); e_add(d, d, T6); }
+	e_slli(T6, d, 20);
+	e_srli(T6, T6, 20);
+	e_li(T0, 0x1000);
+	e_sub(T0, T0, T6);
+	jt_min_a1();   // (to its page's end)
 	if (!(jt_mode & JM_PROTECTED)) {   // (the A20 gate's wrapping: the interpreter's; paging needs protected mode)
 		e_add(T6, d, A1);
 		e_li(T0, 0x100000);
 		slow[(*ns)++] = e_branch(BLTU, T0, T6);
 	}
-	e_slli(T6, d, 20);
-	e_srli(T6, T6, 20);
-	e_add(T6, T6, A1);
-	e_li(T0, 0x1000);
-	slow[(*ns)++] = e_branch(BLTU, T0, T6);   // past its page
 	if (paged) {   // (jit_r_tlb: t0 in, t1 out, t6 and a6 used)
 		e_mv(T0, d);
 		e_call_near(jit_r_tlb[write][0]);
@@ -4124,38 +4164,74 @@ static void jt_repstr_side(const JIns *in, int d, int reg, int seg, int n, bool 
 	e_add(d, d, R_MEM);   // (its host address)
 }
 
+// REP string instructions (K_REPSTR, K_REPCMP), a part at a time: the count into a0 (none: to *none, nothing
+// done), slow if DF is set, a1 = its bytes, at most a page's worth (the sides cut it further: jt_repstr_side)
+static void jt_rep_count(const JIns *in, int sh, u32 **none, u32 **slow, int *ns)
+{
+	if (in->adsz16) jt_zext(A0, jg[1], 16); else e_mv(A0, jg[1]);
+	*none = e_branch(BEQ, A0, X0);
+	e_lw(T6, R_CPU, CPU_OFF(flags));
+	e_andi(T6, T6, DF);
+	slow[(*ns)++] = e_branch(BNE, T6, X0);
+	e_li(T0, 0x1000 >> sh);
+	u32 *k = e_branch(BGEU, T0, A0);
+	e_mv(A0, T0);
+	j_bind(k, jp);
+	e_slli(A1, A0, sh);
+}
+
+// ... after the sides: a1 whole elements, slow if not one (an element across a page's or 64 KB's end)
+static void jt_rep_parts(int n, u32 **slow, int *ns)
+{
+	if (n > 1) e_andi(A1, A1, -n);
+	slow[(*ns)++] = e_branch(BEQ, A1, X0);
+}
+
+// ... a0 bytes done: (E)DI and/or (E)SI on by them, the count down by their elements; t1 = the count left
+static void jt_rep_done(const JIns *in, int sh, bool di, bool si)
+{
+	for (int r = 7; r >= 6; r--) {
+		if (r == 7 ? !di : !si) continue;
+		e_add(T2, jg[r], A0);
+		if (in->adsz16) jt_set_r(r, T2, 16, false); else e_mv(jg[r], T2);
+	}
+	e_srli(T1, A0, sh);
+	e_sub(T2, jg[1], T1);
+	if (in->adsz16) jt_set_r(1, T2, 16, false); else e_mv(jg[1], T2);
+	if (in->adsz16) jt_zext(T1, jg[1], 16); else e_mv(T1, jg[1]);
+}
+
+// REP MOVS, STOS (jit_h_repstr), LODS (the last element into AL/AX/EAX), a page's part at a time while the count
+// lasts; the interpreter takes over (the rest) where a part isn't plain RAM, with DF set, ...
 static void jt_repstr(const JIns *in, int bits)
 {
 	const u8 b = in->op;
 	const int n = (b & 1) ? bits / 8 : 1, sh = n == 1 ? 0 : n == 2 ? 1 : 2;
-	const bool movs = b <= 0xa5;
+	const bool movs = b <= 0xa5, lods = b >= 0xac;
 	jt_flags_store();   // (both ways: the interpreter's needs them, and after it the flags are in cpu->cc)
-	u32 *slow[10], *none;
+	u32 *slow[12], *none;
 	int ns = 0;
-	if (in->adsz16) jt_zext(A0, jg[1], 16); else e_mv(A0, jg[1]);   // the count: none, nothing done
-	none = e_branch(BEQ, A0, X0);
-	e_lw(T6, R_CPU, CPU_OFF(flags));
-	e_andi(T6, T6, DF);
-	slow[ns++] = e_branch(BNE, T6, X0);
-	e_li(T6, 0x1000 >> sh);
-	slow[ns++] = e_branch(BLTU, T6, A0);
-	e_slli(A1, A0, sh);   // the bytes
-	jt_repstr_side(in, A2, 7, SEG_ES, n, true, slow, &ns);   // (host addresses: a2 the destination, a3 the source)
-	if (movs) jt_repstr_side(in, A3, 6, in->seg >= 0 ? in->seg : SEG_DS, n, false, slow, &ns);
-	else jt_get_r(A3, 0, n * 8);
-	e_mv(T1, A1);
-	e_mv(A0, A2);
-	e_mv(A2, T1);
-	e_mv(A1, A3);
-	e_li(A3, n | (movs ? 0 : 0x100));
-	e_call((const void *) jit_h_repstr);
-	if (in->adsz16) jt_zext(T1, jg[1], 16); else e_mv(T1, jg[1]);
-	e_slli(T1, T1, sh);   // (the bytes again: the call keeps no argument)
-	for (int r = 7; r >= (movs ? 6 : 7); r--) {
-		e_add(T2, jg[r], T1);
-		if (in->adsz16) jt_set_r(r, T2, 16, false); else e_mv(jg[r], T2);
+	const u32 *top = jp;
+	jt_rep_count(in, sh, &none, slow, &ns);
+	if (!lods) jt_repstr_side(in, A2, 7, SEG_ES, n, true, slow, &ns);   // (host addresses: a2 the destination,
+	if (movs || lods) jt_repstr_side(in, A3, 6, in->seg >= 0 ? in->seg : SEG_DS, n, false, slow, &ns);   // a3 the
+	else jt_get_r(A3, 0, n * 8);                                                                         // source)
+	jt_rep_parts(n, slow, &ns);
+	if (lods) {
+		e_add(T0, A3, A1);
+		if (n == 4) e_lw(T2, T0, -4); else if (n == 2) e_lhu(T2, T0, -2); else e_lbu(T2, T0, -1);
+		jt_set_r(0, T2, n * 8, true);
+		e_mv(A0, A1);
+	} else {
+		e_mv(T1, A1);
+		e_mv(A0, A2);
+		e_mv(A2, T1);
+		e_mv(A1, A3);
+		e_li(A3, n | (movs ? 0 : 0x100));
+		e_call((const void *) jit_h_repstr);   // (a0: the bytes)
 	}
-	if (in->adsz16) jt_set_r(1, X0, 16, false); else e_mv(jg[1], X0);
+	jt_rep_done(in, sh, !lods, movs || lods);
+	e_branch_to(BNE, T1, X0, top);   // more: the next part
 	u32 *done = e_jump();
 	for (int k = 0; k < ns; k++) j_bind(slow[k], jp);
 	jt_interp(in);
@@ -4163,6 +4239,51 @@ static void jt_repstr(const JIns *in, int bits)
 	j_bind(none, jp);
 	j_bind(done, jp);
 	j_bind(done2, jp);
+}
+
+// REPE / REPNE CMPS, SCAS (jit_h_repcmp), the same way: the flags those of the last pair compared (in cpu->cc
+// after it, both ways)
+static void jt_repcmp(const JIns *in, int bits)
+{
+	const u8 b = in->op;
+	const int n = (b & 1) ? bits / 8 : 1, sh = n == 1 ? 0 : n == 2 ? 1 : 2;
+	const bool cmps = b <= 0xa7;
+	jt_flags_store();
+	u32 *slow[12], *none;
+	int ns = 0;
+	const u32 *top = jp;
+	jt_rep_count(in, sh, &none, slow, &ns);
+	jt_repstr_side(in, A2, 7, SEG_ES, n, false, slow, &ns);
+	if (cmps) jt_repstr_side(in, A3, 6, in->seg >= 0 ? in->seg : SEG_DS, n, false, slow, &ns);
+	else jt_get_r(A3, 0, n * 8);
+	jt_rep_parts(n, slow, &ns);
+	e_mv(T1, A1);
+	e_mv(A0, A2);
+	e_mv(A2, T1);
+	e_mv(A1, A3);
+	e_li(A3, n | (cmps ? 0 : 0x100) | (in->rep == 1 ? 0x200 : 0));
+	e_call((const void *) jit_h_repcmp);   // (a0: the bytes)
+	jt_rep_done(in, sh, true, cmps);
+	e_lw_abs(T2, &jit_cmp_l);
+	jt_sext(F_SRC1, T2, n * 8);
+	e_lw_abs(T2, &jit_cmp_r);
+	jt_sext(F_SRC2, T2, n * 8);
+	e_sub(F_DST, F_SRC1, F_SRC2);
+	jt_sext(F_DST, F_DST, n * 8);
+	jt_set_pf(PF_SUB, n * 8);
+	jt_flags_store();
+	e_lw_abs(T2, &jit_cmp_more);
+	u32 *stop = e_branch(BEQ, T2, X0);   // a pair ended it
+	e_branch_to(BNE, T1, X0, top);       // else the count: the next part
+	j_bind(stop, jp);
+	u32 *done = e_jump();
+	for (int k = 0; k < ns; k++) j_bind(slow[k], jp);
+	jt_interp(in);
+	u32 *done2 = e_jump();
+	j_bind(none, jp);
+	j_bind(done, jp);
+	j_bind(done2, jp);
+	jt_pf = PF_NONE;
 }
 
 static JIT_SMALL void jt_emit(const JIns *in)
@@ -5486,6 +5607,9 @@ static JIT_SMALL void jt_emit(const JIns *in)
 	}
 	case K_REPSTR:
 		jt_repstr(in, bits);
+		break;
+	case K_REPCMP:
+		jt_repcmp(in, bits);
 		break;
 	default:
 		jt_interp(in);

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Long string copies and searches in DOS programs run in translated code: REP MOVS and REP STOS that cross a 4 KB
+  page (all longer than 4 KB) went to the interpreter and now go a page at a time, and REP LODS and REPE/REPNE
+  CMPS/SCAS (string compares and searches) are translated too. A DOS benchmark's memory test runs ~2.5x faster
+  (its score 83 -> 97); 3D games, a desktop start and Linux measure the same as before.
 - The 486 CPU (`gen = 4`) is a 486 with CPUID (patch 0026): programs can set the EFLAGS ID bit, and CPUID reports
   the 486's features only (the FPU; no time-stamp counter or CMPXCHG8B, which came with the Pentium). Before, CPUID
   answered but the ID bit stayed fixed, so programs that check the bit first took the CPU for an early 486 without
