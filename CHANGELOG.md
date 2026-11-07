@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Text on the screen is faster for DOS programs: reads and writes of text-mode video memory (and CGA modes') go
+  straight to the emulated VGA's memory from every part of the emulator, instead of a byte or a character at a time
+  through the general VGA code. With the change below, a DOS benchmark's score goes from 83 to about 134 (its video
+  memory test ~40% faster); 3D games, a desktop start and Linux measure the same as before.
 - Long string copies and searches in DOS programs run in translated code: REP MOVS and REP STOS that cross a 4 KB
   page (all longer than 4 KB) went to the interpreter and now go a page at a time, and REP LODS and REPE/REPNE
   CMPS/SCAS (string compares and searches) are translated too. A DOS benchmark's memory test runs ~2.5x faster

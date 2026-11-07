@@ -85,6 +85,11 @@ uint32_t t386_vbe_read(VGAState* s, uint32_t offset);   // (t386_vga_ext.h: the 
 #define vga_mem_write t386_vga_mem_write
 #define vga_mem_write16 t386_vga_mem_write16
 #define vga_mem_write32 t386_vga_mem_write32
+bool t386_vga_text_write_string(uint32_t off, const uint8_t* buf, int len);   // (t386_vga_ext.h: odd/even modes)
+static inline bool t386_vga_mem_write_string(VGAState* s, uint32_t off, uint8_t* buf, int len) {
+    return t386_vga_text_write_string(off, buf, len) || vga_mem_write_string(s, off, buf, len);
+}
+#define vga_mem_write_string t386_vga_mem_write_string
 
 // pc_new's CPU callbacks, kept as cpui386_new hands them out, for t386_lfb_hooks
 #include "i386.h"
@@ -125,6 +130,15 @@ static bool t386_iomem_write_string(void* iomem, uword addr, uint8_t* buf, int l
     else if (addr - 0xa0000 < 0x10000) t386_vga_written(addr - 0xa0000, len);   // (the window: VBE banks)
     return iomem_write_string(iomem, addr, buf, len);
 }
+// ... and the VGA window's word and dword reads go to t386_vga_ext.h's fast paths whole (pc.c's read a byte at a time)
+#define T386_VGA_READ(f, T, size) \
+    static T t386_##f(void* iomem, uword addr) { \
+        uint32_t v; \
+        if (addr - 0xa0000 < 0x20000 && t386_vga_read_fast(addr - 0xa0000, size, &v)) return v; \
+        return f(iomem, addr); \
+    }
+T386_VGA_READ(iomem_read16, u16, 2)
+T386_VGA_READ(iomem_read32, u32, 4)
 static void t386_set_pci_vga_bar(void* opaque, int bar_num, uint32_t addr, bool enabled) {
     PC* pc = opaque;
     set_pci_vga_bar(opaque, bar_num, addr, enabled);
@@ -140,5 +154,7 @@ void t386_lfb_hooks(void) {
     t386_cb->iomem_write16 = t386_iomem_write16;
     t386_cb->iomem_write32 = t386_iomem_write32;
     t386_cb->iomem_write_string = t386_iomem_write_string;
+    t386_cb->iomem_read16 = t386_iomem_read16;
+    t386_cb->iomem_read32 = t386_iomem_read32;
     t386_accel_hooks(t386_cb);   // (and the 2D engine's port)
 }

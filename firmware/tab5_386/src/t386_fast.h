@@ -240,14 +240,14 @@ int t386_vga_read_fast(uint32_t off, int size, uint32_t *out);
 static inline u32 fast_io_read(CPUI386 *cpu, uword paddr, int size)
 {
 	u32 v;
-	if (paddr - 0xa0000 < 0x10000 && t386_vga_read_fast(paddr - 0xa0000, size, &v)) return v;
+	if (paddr - 0xa0000 < 0x20000 && t386_vga_read_fast(paddr - 0xa0000, size, &v)) return v;   // (A0000-BFFFF)
 	return size == 1 ? cpu->cb.iomem_read8(cpu->cb.iomem, paddr) :
 	       size == 2 ? cpu->cb.iomem_read16(cpu->cb.iomem, paddr) : cpu->cb.iomem_read32(cpu->cb.iomem, paddr);
 }
 
 static inline void fast_io_write(CPUI386 *cpu, uword paddr, int size, u32 v)
 {
-	if (paddr - 0xa0000 < 0x10000 && t386_vga_write_fast(paddr - 0xa0000, size, v)) return;
+	if (paddr - 0xa0000 < 0x20000 && t386_vga_write_fast(paddr - 0xa0000, size, v)) return;
 	if (size == 1) cpu->cb.iomem_write8(cpu->cb.iomem, paddr, v);
 	else if (size == 2) cpu->cb.iomem_write16(cpu->cb.iomem, paddr, v);
 	else cpu->cb.iomem_write32(cpu->cb.iomem, paddr, v);

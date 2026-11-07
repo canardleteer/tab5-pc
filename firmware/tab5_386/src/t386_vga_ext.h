@@ -446,9 +446,33 @@ static inline uint32_t vga_latched_write(VGAState* s, int mode, uint32_t v) {
     return (val & bit_mask) | (s->latch & ~bit_mask);
 }
 
+// Odd/even (text) modes through the B0000 or B8000 window (memory map modes 2 and 3): the offset of the access in
+// it into *a, if it lies in it and vga.c keeps planes 0 and 1 interleaved for it (a byte at offset a in
+// vga_ram[2 (a & ~1) + plane], plane (GR04 & 2) | (a & 1)); vga_mem_write's and vga_mem_read's odd/even ways,
+// without their calls (pc.c's iomem callbacks, the interpreter's, a word or more at a time)
+static inline bool t386_vga_text_at(VGAState* s, uint32_t off, int size, uint32_t* a) {
+    const int mm = (s->gr[VGA_GFX_MISC] >> 2) & 3;
+    if (mm < 2 || (s->sr[VGA_SEQ_MEMORY_MODE] & VGA_SR04_CHN_4M) || !(s->gr[VGA_GFX_MODE] & 0x10) || s->vga_text_ops)
+        return false;
+    const uint32_t base = mm == 2 ? 0x10000 : 0x18000;
+    if (off < base || off + size > base + 0x8000 || (off - base + size) * 2 > (uint32_t)s->vga_ram_size) return false;
+    *a = off - base;
+    return true;
+}
+static inline void t386_vga_text_put(VGAState* s, uint32_t a, uint32_t v) {   // one byte (the map mask's planes)
+    const uint32_t plane = (s->gr[VGA_GFX_PLANE_READ] & 2) | (a & 1);
+    if (s->sr[VGA_SEQ_PLANE_WRITE] & (1 << plane)) s->vga_ram[((a & ~1) << 1) | plane] = v;
+}
+
 int t386_vga_write_fast(uint32_t off, int size, uint32_t v) {
     VGAState* s = t386_vga;
-    if (!s || ((s->gr[VGA_GFX_MISC] >> 2) & 3) != 1 || off + size > 0x10000 || !(s->msr & MSR_RAM_ENABLE)) return 0;
+    if (!s || !(s->msr & MSR_RAM_ENABLE)) return 0;
+    uint32_t a;
+    if (t386_vga_text_at(s, off, size, &a)) {
+        for (int i = 0; i < size; i++, v >>= 8) t386_vga_text_put(s, a + i, v & 0xff);
+        return 1;
+    }
+    if (((s->gr[VGA_GFX_MISC] >> 2) & 3) != 1 || off + size > 0x10000) return 0;
     off += s->bank_offset;
     const uint8_t mm = s->sr[VGA_SEQ_MEMORY_MODE], mode = s->gr[VGA_GFX_MODE], pm = s->sr[VGA_SEQ_PLANE_WRITE];
     if (mm & VGA_SR04_CHN_4M) {
@@ -483,9 +507,31 @@ void t386_vga_written(uint32_t off, int size) {
     if (s && vbe_enabled(s)) t386_vram_mark(off + s->bank_offset, size);
 }
 
+// tiny386's bulk write of len bytes from buf (pc.c's iomem_write_string: the interpreter's REP MOVS into the
+// window), in an odd/even mode; false (vga.c's, then one at a time) otherwise
+bool t386_vga_text_write_string(uint32_t off, const uint8_t* buf, int len) {
+    VGAState* s = t386_vga;
+    uint32_t a;
+    if (!s || !(s->msr & MSR_RAM_ENABLE) || len <= 0 || !t386_vga_text_at(s, off, len, &a)) return false;
+    for (int i = 0; i < len; i++) t386_vga_text_put(s, a + i, buf[i]);
+    return true;
+}
+
 int t386_vga_read_fast(uint32_t off, int size, uint32_t* out) {
     VGAState* s = t386_vga;
-    if (!s || ((s->gr[VGA_GFX_MISC] >> 2) & 3) != 1 || off + size > 0x10000 || !(s->msr & MSR_RAM_ENABLE)) return 0;
+    if (!s || !(s->msr & MSR_RAM_ENABLE)) return 0;
+    uint32_t a;
+    if (t386_vga_text_at(s, off, size, &a)) {
+        uint32_t v = 0;
+        const uint32_t hi = s->gr[VGA_GFX_PLANE_READ] & 2;
+        for (int i = 0; i < size; i++) {
+            const uint32_t x = a + i;
+            v |= (uint32_t)s->vga_ram[((x & ~1) << 1) | hi | (x & 1)] << (8 * i);
+        }
+        *out = v;
+        return 1;
+    }
+    if (((s->gr[VGA_GFX_MISC] >> 2) & 3) != 1 || off + size > 0x10000) return 0;
     off += s->bank_offset;
     const uint8_t mm = s->sr[VGA_SEQ_MEMORY_MODE], mode = s->gr[VGA_GFX_MODE];
     uint32_t v = 0;
