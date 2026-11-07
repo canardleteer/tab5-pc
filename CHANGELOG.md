@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The PC's IDE controller can do bus-master DMA (the emulated PIIX3's bus master, patch 0025): a disk read or write
+  from Linux moves its sectors to or from memory in one go, with one interrupt, instead of a sector at a time
+  through the data port. Sprig Linux 1.5.0's kernels use it (disk reads ~3.7 -> ~4.1 MB/s, writes ~18% faster);
+  older kernels, DOS and the BIOS keep using PIO as before, and Sprig 1.5.0 uses PIO on older firmware. A big
+  sequential read is also read ahead on the other core, and the card's DMA goes straight to and from the drive's
+  buffer. The read buffers grow only when a guest makes big reads, so DOS machines keep that memory for the code
+  cache.
 - Disk reads and writes are faster:
   - A write command's sectors go to the card together (up to 64 KB at a time) instead of one block at a time: a
     DOS file copy takes about half as long (4.2 MB: 18.9 -> 9.1 s), and Linux writes ~1.7x faster. The command

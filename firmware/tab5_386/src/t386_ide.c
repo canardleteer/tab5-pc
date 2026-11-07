@@ -6,6 +6,7 @@
 #include "freertos/semphr.h"
 #include "esp_heap_caps.h"
 #include "esp_cache.h"
+#include "esp_memory_utils.h"
 #include "esp_timer.h"
 #include "sdmmc_cmd.h"
 #include "diskio_impl.h"
@@ -53,9 +54,15 @@ static uint8_t* t386_bounce;
 // cluster of 4 KB) or as many as asked, or 64 if it goes on from where the last one ended, into this buffer; the
 // following ones come from it. Writes there empty it.
 #define T386_RA_SECTORS 64
+#define T386_PF_SECTORS 128   // (the prefetch: up to a DMA command's piece, ide.c's WRITE_GATHER_SECTORS; and the
+                              // read-ahead's buffer, the two swap: both grow to it at the first big read, so that
+                              // a PC that makes none (DOS and its programs: the BIOS's PIO) keeps the memory for
+                              // the code cache)
+static uint32_t t386_buf_sectors = T386_RA_SECTORS;   // their size now
 static uint8_t* t386_ra;
 static T386Raw* t386_ra_of;
 static uint32_t t386_ra_sector, t386_ra_count, t386_ra_next;   // (t386_ra_next: where the last read ended)
+static uint32_t t386_big_next;   // where the last read of more than 16 sectors (DMA) ended
 
 // Prefetch: while the guest goes through a sequential read, a task on core 0 reads the next T386_RA_SECTORS into a
 // second buffer, which takes the read-ahead's place when the reads get there: the card works while the PC runs (it
@@ -229,6 +236,26 @@ static void t386_pf_drop(T386Raw* r, uint32_t sector, uint32_t count) {
     t386_pf_state = PF_IDLE;
 }
 
+// With t386_raw_lock held: the read-ahead's and the prefetch's buffers T386_PF_SECTORS (once, for big reads; what they
+// hold is dropped). Stays as it was if there is no memory.
+static void t386_pf_grow(void) {
+    if (t386_buf_sectors >= T386_PF_SECTORS) return;
+    t386_pf_wait();
+    uint8_t* a = heap_caps_aligned_alloc(128, T386_PF_SECTORS * 512, MALLOC_CAP_SPIRAM);
+    uint8_t* b = heap_caps_aligned_alloc(128, T386_PF_SECTORS * 512, MALLOC_CAP_SPIRAM);
+    if (!a || !b) {
+        heap_caps_free(a);
+        heap_caps_free(b);
+        return;
+    }
+    heap_caps_free(t386_ra);
+    heap_caps_free(t386_pf);
+    t386_ra = a, t386_pf = b;
+    t386_ra_of = NULL;
+    t386_pf_state = PF_IDLE;
+    t386_buf_sectors = T386_PF_SECTORS;
+}
+
 // Takes runs (heap_caps_malloc'ed; freed if it fails): nruns pieces, in image order, of an image of `sectors` sectors.
 int t386_raw_attach(FILE* f, void* card, T386Run* runs, uint32_t nruns, uint32_t sectors) {
     if (!t386_raw_lock) {
@@ -318,20 +345,48 @@ int t386_raw_rw(FILE* f, int write, void* buf, uint32_t sector, uint32_t count) 
     if (write && t386_ra_of == r && sector < t386_ra_sector + t386_ra_count && sector + count > t386_ra_sector)
         t386_ra_of = NULL;
     if (write) t386_pf_drop(r, sector, count);
-    for (uint32_t done = 0; done < count && !err;) {
+    // a big read (DMA) the prefetch has (or is reading): from its buffer
+    bool done_already = false;
+    const bool sequential = !write && sector == t386_big_next;
+    if (!write && t386_pf_state != PF_IDLE && t386_pf_of == r && sector >= t386_pf_sector &&
+        sector + count <= t386_pf_sector + t386_pf_count) {
+        t386_pf_wait();
+        if (t386_pf_state == PF_READY) {
+            memcpy(buf, t386_pf + (sector - t386_pf_sector) * 512, count * 512);
+            t386_pf_state = PF_IDLE;
+            t386_disk_prefetched++;
+            done_already = true;
+        }
+    }
+    // straight to and from buf when it is whole cache lines in PSRAM (ide.c's buffer), else through the bounce one
+    const bool direct = !((uintptr_t)buf & 127) && esp_ptr_external_ram(buf);
+    for (uint32_t done = 0; done < count && !err && !done_already;) {
         uint32_t n = count - done < T386_BOUNCE_SECTORS ? count - done : T386_BOUNCE_SECTORS, run;
         const uint32_t cs = t386_raw_map(r, sector + done, &run);
         if (n > run) n = run;
         uint8_t* p = (uint8_t*)buf + done * 512;
         if (write) {
-            memcpy(t386_bounce, p, n * 512);
-            esp_cache_msync(t386_bounce, n * 512, ESP_CACHE_MSYNC_FLAG_DIR_C2M);   // (the card's DMA reads PSRAM)
-            err = t386_card_rw(r->card, 1, t386_bounce, cs, n);
+            if (!direct) memcpy(t386_bounce, p, n * 512);
+            esp_cache_msync(direct ? p : t386_bounce, n * 512, ESP_CACHE_MSYNC_FLAG_DIR_C2M);   // (DMA reads PSRAM)
+            err = t386_card_rw(r->card, 1, direct ? p : t386_bounce, cs, n);
         } else {
-            err = t386_card_rw(r->card, 0, t386_bounce, cs, n);
-            if (!err) memcpy(p, t386_bounce, n * 512);
+            err = t386_card_rw(r->card, 0, direct ? p : t386_bounce, cs, n);
+            if (!err && !direct) memcpy(p, t386_bounce, n * 512);
         }
         done += n;
+    }
+    if (!write) {
+        t386_big_next = sector + count;
+        // a streak of big reads: the next one read meanwhile (as many sectors, up to the buffer's)
+        const uint32_t next = sector + count;
+        if (!err && sequential && t386_pf_task && t386_pf_state != PF_BUSY && next < r->sectors) {
+            if (count > t386_buf_sectors) t386_pf_grow();
+            t386_pf_of = r, t386_pf_sector = next;
+            t386_pf_count = count < t386_buf_sectors ? count : t386_buf_sectors;
+            if (t386_pf_count > r->sectors - next) t386_pf_count = r->sectors - next;
+            t386_pf_state = PF_BUSY;
+            xTaskNotifyGive(t386_pf_task);
+        }
     }
     xSemaphoreGive(t386_raw_lock);
     return err ? -1 : 0;
@@ -410,6 +465,8 @@ static size_t t386_fwrite(const void* buf, size_t size, size_t n, FILE* f) {
     return put / size;
 }
 
+void t386_ram_written(uint32_t addr, int len);   // the bus master's DMA into guest RAM: the translator checks
+#define T386_DMA_WRITE(addr, len) t386_ram_written(addr, len)
 #define fopen t386_fopen
 #define fclose t386_fclose
 #define fseeko t386_fseeko

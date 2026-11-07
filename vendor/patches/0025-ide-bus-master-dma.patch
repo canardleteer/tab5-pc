@@ -1,0 +1,479 @@
+Bus-master DMA for the hard disks: the PIIX3 IDE function gets its bus master (prog-if 0x80, BAR4: command,
+status and PRD table pointer for each channel), READ DMA / WRITE DMA (C8-CB), SET FEATURES (transfer mode,
+multiword DMA 0-2 as a PIIX3's; the rest accepted) and IDENTIFY's DMA words. A DMA command waits for the bus
+master's start (or runs at once if it was started first), then moves its sectors between the image and guest RAM
+by the PRD table, up to 128 sectors at a time through the drive's buffer, and interrupts once: no PIO a sector at a
+time. Guest addresses outside RAM or in the 640K-1M hole are refused (an error, as a bus fault). Writes into guest
+RAM are reported through T386_DMA_WRITE (as i8257.c's, patch 0005) for a code translator. IDETIM's decode bits are
+set as a BIOS leaves them (Linux's ata_piix skips a channel without them), and so are BAR4 (0xc000) and I/O
+decoding and bus mastering (Linux's ata_generic takes only an enabled controller). The drive's buffer is whole
+cache lines (posix_memalign), so that the image's reads and writes can go straight to and from it. CD-ROM drives
+stay PIO (they accept a PIO transfer mode). The BIOS and DOS keep using PIO.
+
+--- a/ide.c
++++ b/ide.c
+@@ -369,7 +369,9 @@
+     int data_index;
+     int data_end;
+     uint8_t io_buffer[MAX_MULT_SECTORS*512 + 4];
+-    uint8_t *wbuf; /* WRITE_GATHER_SECTORS, allocated on the first write */
++    uint8_t *wbuf; /* WRITE_GATHER_SECTORS, allocated on the first write (and DMA's) */
++    uint8_t dma_cmd; /* a READ DMA (1) or WRITE DMA (2) waiting for the bus master */
++    int8_t mdma_mode; /* the multiword DMA mode set (SET FEATURES), -1: none */
+     int wcount; /* sectors gathered in it, from wsector on */
+     int64_t wsector;
+ };
+@@ -383,6 +385,11 @@
+     IDEState *drives[2];
+     /* 0x3f6 command */
+     uint8_t cmd;
++    /* PIIX bus master (BAR4): command (bit 0 start, bit 3 to memory), status (bit 0 active, 1 error,
++       2 interrupt, 5-6 drives DMA capable), the PRD table's address; the drive whose DMA command waits */
++    uint8_t bm_cmd, bm_status;
++    uint32_t bm_prd;
++    IDEState *dma_drive;
+ };
+ 
+ static void ide_sector_read_cb(void *opaque, int ret);
+@@ -440,9 +447,10 @@
+     padstr((char *)(tab + 27), "TINY386 HARDDISK", 40);
+     stw(tab + 47, 0x8000 | MAX_MULT_SECTORS);
+     stw(tab + 48, 1); /* dword I/O */
+-    stw(tab + 49, 1 << 9); /* LBA supported, no DMA */
++    stw(tab + 49, (1 << 9) | (1 << 8)); /* LBA, DMA supported (the PIIX bus master) */
+     stw(tab + 51, 0x200); /* PIO transfer cycle */
+     stw(tab + 52, 0x200); /* DMA transfer cycle */
++    stw(tab + 53, 1 << 1); /* words 64-70 valid */
+     stw(tab + 54, s->cylinders);
+     stw(tab + 55, s->heads);
+     stw(tab + 56, s->sectors);
+@@ -453,6 +461,13 @@
+         stw(tab + 59, 0x100 | s->mult_sectors);
+     stw(tab + 60, s->nb_sectors);
+     stw(tab + 61, s->nb_sectors >> 16);
++    /* multiword DMA modes 0-2 (a PIIX3's), the one set; PIO modes 3 and 4; cycle times (ns) */
++    stw(tab + 63, 0x07 | (s->mdma_mode >= 0 ? 0x100 << s->mdma_mode : 0));
++    stw(tab + 64, 0x03);
++    stw(tab + 65, 120);
++    stw(tab + 66, 120);
++    stw(tab + 67, 120);
++    stw(tab + 68, 120);
+     stw(tab + 80, (1 << 1) | (1 << 2));
+     stw(tab + 82, (1 << 14));
+     stw(tab + 83, (1 << 14));
+@@ -643,6 +658,14 @@
+     ide_transfer_stop(s);
+ }
+ 
++/* the drive's buffer for whole commands (write gathering, DMA): whole cache lines, so that the image's
++   reads and writes can go straight to and from it (a card's DMA) */
++static uint8_t *ide_buf_alloc(void)
++{
++    void *p = NULL;
++    return posix_memalign(&p, 128, WRITE_GATHER_SECTORS * 512) == 0 ? p : NULL;
++}
++
+ static void ide_sector_write_cb1(IDEState *s)
+ {
+     int64_t sector_num;
+@@ -658,7 +681,7 @@
+        the buffer is full): many small writes take an SD card much longer than one
+        big one. The command still completes only once they are written. */
+     if (!s->wbuf)
+-        s->wbuf = malloc(WRITE_GATHER_SECTORS * 512); /* (not pcmalloc: little room there) */
++        s->wbuf = ide_buf_alloc(); /* (not pcmalloc: little room there) */
+     if (s->wbuf) {
+         if (!s->wcount)
+             s->wsector = sector_num;
+@@ -725,6 +748,180 @@
+     s->status = READY_STAT | SEEK_STAT | DRQ_STAT;
+ }
+ 
++/* ---- PIIX bus-master DMA ----
++   A READ DMA / WRITE DMA command waits until the bus master is started (or runs at once if it was),
++   then moves its sectors between the image and guest RAM by the PRD table (address, byte count, bit
++   31: the last), up to WRITE_GATHER_SECTORS at a time through the drive's buffer, and interrupts once. */
++#ifndef T386_DMA_WRITE   /* a code translator invalidates what it translated from guest RAM written */
++#define T386_DMA_WRITE(addr, len) do {} while (0)
++#endif
++#define BM_CMD_START 0x01
++#define BM_ST_ACTIVE 0x01
++#define BM_ST_ERROR 0x02
++#define BM_ST_IRQ 0x04
++
++uint32_t ide_bm_base = 0x10000; /* BAR4's ports (none until mapped: above any port) */
++static IDEIFState *ide_bm_if[2];
++static uint8_t *ide_dma_mem;
++static uint32_t ide_dma_mem_size;
++
++/* guest RAM, not the 640K-1M hole (video memory, ROMs, the device state) */
++static int ide_dma_mem_ok(uint32_t addr, uint32_t len)
++{
++    if (addr >= ide_dma_mem_size || len > ide_dma_mem_size - addr)
++        return 0;
++    return addr >= 0x100000 || addr + len <= 0xa0000;
++}
++
++static uint32_t ide_dma_ld32(uint32_t addr)
++{
++    uint32_t v;
++    memcpy(&v, ide_dma_mem + addr, 4);
++    return v;
++}
++
++static void ide_dma_run(IDEState *s)
++{
++    IDEIFState *ifs = s->ide_if;
++    const int to_mem = s->dma_cmd == 1;
++    int n = s->nsector ? s->nsector : 256, err = 0, eot = 0;
++    int64_t sector = ide_get_sector(s);
++    uint32_t prd = ifs->bm_prd, addr = 0, left = 0; /* the PRD entry being used: where, how much left */
++
++    s->dma_cmd = 0;
++    ifs->dma_drive = NULL;
++    if (!s->wbuf)
++        s->wbuf = ide_buf_alloc();
++    if (!s->wbuf || !ide_dma_mem)
++        err = 1;
++    while (n > 0 && !err) {
++        const int k = n < WRITE_GATHER_SECTORS ? n : WRITE_GATHER_SECTORS;
++        const uint32_t bytes = k * 512;
++        if (to_mem && s->bs->read_async(s->bs, sector, s->wbuf, k, NULL, NULL) != 0) {
++            err = 1;
++            break;
++        }
++        for (uint32_t off = 0; off < bytes;) {
++            if (!left) {
++                uint32_t c;
++                if (eot || !ide_dma_mem_ok(prd, 8)) {
++                    err = 1;
++                    break;
++                }
++                addr = ide_dma_ld32(prd);
++                c = ide_dma_ld32(prd + 4);
++                left = c & 0xfffe;
++                if (!left)
++                    left = 0x10000;
++                eot = c >> 31;
++                prd += 8;
++                if (!ide_dma_mem_ok(addr, left)) {
++                    err = 1;
++                    break;
++                }
++            }
++            const uint32_t m = bytes - off < left ? bytes - off : left;
++            if (to_mem) {
++                memcpy(ide_dma_mem + addr, s->wbuf + off, m);
++                T386_DMA_WRITE(addr, m);
++            } else {
++                memcpy(s->wbuf + off, ide_dma_mem + addr, m);
++            }
++            addr += m;
++            left -= m;
++            off += m;
++        }
++        if (!err && !to_mem && s->bs->write_async(s->bs, sector, s->wbuf, k, NULL, NULL) != 0)
++            err = 1;
++        if (err)
++            break;
++        sector += k;
++        n -= k;
++    }
++    if (err) {
++        ide_abort_command(s);
++        ifs->bm_status |= BM_ST_ERROR;
++    } else {
++        ide_set_sector(s, sector);
++        s->nsector = 0;
++        s->status = READY_STAT | SEEK_STAT;
++        s->error = 0;
++    }
++    ifs->bm_status = (ifs->bm_status & ~BM_ST_ACTIVE) | BM_ST_IRQ;
++    ide_set_irq(s);
++}
++
++static void ide_dma_start(IDEState *s, int to_mem)
++{
++    IDEIFState *ifs = s->ide_if;
++    if (!ide_dma_mem) {
++        ide_abort_command(s);
++        ide_set_irq(s);
++        return;
++    }
++    s->dma_cmd = to_mem ? 1 : 2;
++    ifs->dma_drive = s;
++    s->status = READY_STAT | SEEK_STAT | DRQ_STAT;
++    s->error = 0;
++    if (ifs->bm_cmd & BM_CMD_START)
++        ide_dma_run(s);
++}
++
++static void ide_bm_write8(IDEIFState *ifs, int reg, uint8_t v)
++{
++    switch (reg) {
++    case 0: {
++        const uint8_t old = ifs->bm_cmd;
++        ifs->bm_cmd = v & 0x09;
++        if (!(v & BM_CMD_START)) {
++            ifs->bm_status &= ~BM_ST_ACTIVE;
++        } else if (!(old & BM_CMD_START)) {
++            ifs->bm_status |= BM_ST_ACTIVE;
++            if (ifs->dma_drive && ifs->dma_drive->dma_cmd)
++                ide_dma_run(ifs->dma_drive);
++        }
++        break;
++    }
++    case 2: /* bits 1, 2 written 1: cleared; 5, 6: as written */
++        ifs->bm_status = (ifs->bm_status & ~(v & 0x06) & ~0x60) | (v & 0x60);
++        break;
++    case 4: case 5: case 6: case 7: {
++        const int sh = (reg - 4) * 8;
++        ifs->bm_prd = ((ifs->bm_prd & ~(0xffu << sh)) | ((uint32_t)v << sh)) & ~3u;
++        break;
++    }
++    }
++}
++
++static uint8_t ide_bm_read8(IDEIFState *ifs, int reg)
++{
++    switch (reg) {
++    case 0: return ifs->bm_cmd;
++    case 2: return ifs->bm_status;
++    case 4: case 5: case 6: case 7: return ifs->bm_prd >> ((reg - 4) * 8);
++    }
++    return 0;
++}
++
++/* BAR4's ports (offset from ide_bm_base: 0-7 the first channel's, 8-15 the second's), 1 << size_log2 bytes */
++uint32_t ide_bm_read(uint32_t off, int size_log2)
++{
++    IDEIFState *ifs = ide_bm_if[(off >> 3) & 1];
++    uint32_t v = 0;
++    for (int i = 0; i < (1 << size_log2); i++)
++        v |= (uint32_t)(ifs ? ide_bm_read8(ifs, (off + i) & 7) : 0xff) << (8 * i);
++    return v;
++}
++
++void ide_bm_write(uint32_t off, uint32_t val, int size_log2)
++{
++    IDEIFState *ifs = ide_bm_if[(off >> 3) & 1];
++    if (!ifs)
++        return;
++    for (int i = 0; i < (1 << size_log2); i++)
++        ide_bm_write8(ifs, (off + i) & 7, val >> (8 * i));
++}
++
+ static void ide_identify_cb(IDEState *s)
+ {
+     ide_transfer_stop(s);
+@@ -736,6 +933,11 @@
+ #if defined(DEBUG_IDE)
+     printf("ide: exec_cmd=0x%02x\n", val);
+ #endif
++    if (s->dma_cmd) { /* (a DMA command never started: dropped) */
++        s->dma_cmd = 0;
++        if (s->ide_if->dma_drive == s)
++            s->ide_if->dma_drive = NULL;
++    }
+     switch(val) {
+     case WIN_IDENTIFY:
+         ide_identify(s);
+@@ -790,6 +992,37 @@
+             ide_sector_write(s);
+         }
+         break;
++    case WIN_READDMA:
++    case WIN_READDMA_ONCE:
++        ide_dma_start(s, 1);
++        break;
++    case WIN_WRITEDMA:
++    case WIN_WRITEDMA_ONCE:
++        ide_dma_start(s, 0);
++        break;
++    case WIN_SETFEATURES:
++        switch (s->feature) {
++        case 0x03: /* transfer mode: PIO (0x00-0x0f) or multiword DMA 0-2 (0x20-0x22) */
++            if ((s->nsector & 0xf8) == 0x20 && (s->nsector & 7) <= 2)
++                s->mdma_mode = s->nsector & 7;
++            else if ((s->nsector & 0xf0) == 0x00)
++                s->mdma_mode = -1;
++            else {
++                ide_abort_command(s);
++                ide_set_irq(s);
++                return;
++            }
++            break;
++        case 0x02: case 0x82: case 0xaa: case 0x55: case 0x66: case 0xcc:
++            break; /* write cache, read look-ahead, power-on defaults: nothing to change */
++        default:
++            ide_abort_command(s);
++            ide_set_irq(s);
++            return;
++        }
++        s->status = READY_STAT | SEEK_STAT;
++        ide_set_irq(s);
++        break;
+     case WIN_READ_NATIVE_MAX:
+         ide_set_sector(s, s->nb_sectors - 1);
+         s->status = READY_STAT;
+@@ -1553,6 +1786,14 @@
+         ide_transfer_start2(s, 0, 512, ide_transfer_stop2);
+         ide_set_irq(s);
+         break;
++    case WIN_SETFEATURES: /* a PIO transfer mode (Linux sets one): accepted, nothing to change */
++        if (s->feature == 0x03 && (s->nsector & 0xf0) != 0x00) {
++            ide_abort_command(s);
++        } else {
++            s->status = READY_STAT | SEEK_STAT;
++        }
++        ide_set_irq(s);
++        break;
+     case WIN_IDENTIFY:
+     case WIN_READ:
+         ide_set_signature(s);
+@@ -1697,8 +1938,10 @@
+             if (s) {
+                 s->status = BUSY_STAT | SEEK_STAT;
+                 s->error = 0x01;
++                s->dma_cmd = 0; /* (a DMA command waiting: dropped) */
+             }
+         }
++        s1->dma_drive = NULL;
+     } else if ((s1->cmd & IDE_CMD_RESET) && !(val & IDE_CMD_RESET)) {
+         /* high to low */
+         for(i = 0; i < 2; i++) {
+@@ -1869,6 +2112,7 @@
+         s->bs->get_chs(s->bs, &s->cylinders, &s->heads, &s->sectors);
+ 
+     s->mult_sectors = MAX_MULT_SECTORS;
++    s->mdma_mode = -1;
+     /* ide regs */
+     s->feature = 0;
+     s->error = 0;
+@@ -2450,11 +2694,37 @@
+     return 0;
+ }
+ 
+-PCIDevice *piix3_ide_init(PCIBus *pci_bus, int devfn)
++static void ide_bm_bar_set(void *opaque, int bar_num, uint32_t addr, bool enabled)
++{
++    ide_bm_base = enabled && addr ? addr : 0x10000; /* (0: not placed; the ISA DMA controller's ports) */
++}
++
++/* ide, ide2: the two channels (either may be NULL); mem: guest RAM, for the bus master's DMA */
++PCIDevice *piix3_ide_init(PCIBus *pci_bus, int devfn, IDEIFState *ide, IDEIFState *ide2,
++                          uint8_t *mem, uint32_t mem_size)
+ {
+     PCIDevice *d;
+     d = pci_register_device(pci_bus, "PIIX3 IDE", devfn, 0x8086, 0x7010, 0x00, 0x0101);
+-    pci_device_set_config8(d, 0x09, 0x00); /* ISA IDE ports, no DMA */
++    pci_device_set_config8(d, 0x09, 0x80); /* ISA IDE ports, bus master */
++    pci_register_bar(d, 4, 16, PCI_ADDRESS_SPACE_IO, NULL, ide_bm_bar_set);
++    /* as a BIOS leaves it: IDETIM with both channels' ports decoded (Linux's ata_piix skips a channel
++       without), BAR4 at 0xc000, I/O decoding and bus mastering on (Linux's ata_generic takes only an
++       enabled controller) */
++    pci_device_set_config16(d, 0x40, 0x8000);
++    pci_device_set_config16(d, 0x42, 0x8000);
++    pci_device_set_config16(d, 0x20, 0xc000 | PCI_ADDRESS_SPACE_IO);
++    pci_device_set_config16(d, 0x04, 0x0005);
++    ide_bm_base = 0xc000;
++    ide_bm_if[0] = ide;
++    ide_bm_if[1] = ide2;
++    ide_dma_mem = mem;
++    ide_dma_mem_size = mem_size;
++    for (int i = 0; i < 2; i++) { /* the drives' "DMA capable" bits */
++        IDEIFState *ifs = i ? ide2 : ide;
++        if (ifs)
++            ifs->bm_status = (ifs->drives[0] && ifs->drives[0]->drive_kind == IDE_HD ? 0x20 : 0) |
++                             (ifs->drives[1] && ifs->drives[1]->drive_kind == IDE_HD ? 0x40 : 0);
++    }
+     return d;
+ }
+ 
+--- a/ide.h
++++ b/ide.h
+@@ -49,7 +49,12 @@
+ uint32_t ide_status_read(void *opaque);
+ 
+ #include "pci.h"
+-PCIDevice *piix3_ide_init(PCIBus *pci_bus, int devfn);
++PCIDevice *piix3_ide_init(PCIBus *pci_bus, int devfn, IDEIFState *ide, IDEIFState *ide2,
++                          uint8_t *mem, uint32_t mem_size);
++/* the PIIX bus master's ports: BAR4, 16 of them from ide_bm_base (0x10000: not mapped) */
++extern uint32_t ide_bm_base;
++uint32_t ide_bm_read(uint32_t off, int size_log2);
++void ide_bm_write(uint32_t off, uint32_t val, int size_log2);
+ 
+ void ide_fill_cmos(IDEIFState *s, void *cmos,
+                    uint8_t (*set)(void *cmos, int addr, uint8_t val));
+--- a/pc.c
++++ b/pc.c
+@@ -154,6 +154,9 @@
+ 	PC *pc = o;
+ 	u8 val;
+ 
++	/* the IDE bus master (PIIX BAR4) */
++	if ((uint32_t) addr - ide_bm_base < 16)
++		return ide_bm_read(addr - ide_bm_base, 0);
+ 	switch(addr) {
+ 	case 0x20: case 0x21: case 0xa0: case 0xa1:
+ 		val = i8259_ioport_read(pc->pic, addr);
+@@ -286,6 +289,9 @@
+ 	PC *pc = o;
+ 	u16 val;
+ 
++	/* the IDE bus master (PIIX BAR4) */
++	if ((uint32_t) addr - ide_bm_base < 16)
++		return ide_bm_read(addr - ide_bm_base, 1);
+ 	switch(addr) {
+ 	case 0x1ce: case 0x1cf:
+ 		val = vbe_read(pc->vga, addr - 0x1ce);
+@@ -317,6 +323,9 @@
+ {
+ 	PC *pc = o;
+ 	u32 val;
++	/* the IDE bus master (PIIX BAR4) */
++	if ((uint32_t) addr - ide_bm_base < 16)
++		return ide_bm_read(addr - ide_bm_base, 2);
+ 	switch(addr) {
+ 	case 0x1f0:
+ 		val = ide_data_readl(pc->ide);
+@@ -358,6 +367,9 @@
+ static void pc_io_write(void *o, int addr, u8 val)
+ {
+ 	PC *pc = o;
++	/* the IDE bus master (PIIX BAR4) */
++	if ((uint32_t) addr - ide_bm_base < 16)
++		{ ide_bm_write(addr - ide_bm_base, val, 0); return; }
+ 	switch(addr) {
+ 	case 0x80: case 0xed:
+ 		/* used by linux, for io delay */
+@@ -507,6 +519,9 @@
+ static void pc_io_write16(void *o, int addr, u16 val)
+ {
+ 	PC *pc = o;
++	/* the IDE bus master (PIIX BAR4) */
++	if ((uint32_t) addr - ide_bm_base < 16)
++		{ ide_bm_write(addr - ide_bm_base, val, 1); return; }
+ 	switch(addr) {
+ 	case 0x1f0:
+ 		ide_data_writew(pc->ide, val);
+@@ -544,6 +559,9 @@
+ static void pc_io_write32(void *o, int addr, u32 val)
+ {
+ 	PC *pc = o;
++	/* the IDE bus master (PIIX BAR4) */
++	if ((uint32_t) addr - ide_bm_base < 16)
++		{ ide_bm_write(addr - ide_bm_base, val, 2); return; }
+ 	switch(addr) {
+ 	case 0x1f0:
+ 		ide_data_writel(pc->ide, val);
+@@ -819,7 +837,7 @@
+ 
+ 	int piix3_devfn;
+ 	pc->i440fx = i440fx_init(&pc->pcibus, &piix3_devfn);
+-	pc->pci_ide = piix3_ide_init(pc->pcibus, piix3_devfn + 1);
++	pc->pci_ide = piix3_ide_init(pc->pcibus, piix3_devfn + 1, pc->ide, pc->ide2, (uint8_t *) mem, conf->mem_size);
+ 
+ 	pc->phys_mem = mem;
+ 	pc->phys_mem_size = conf->mem_size;

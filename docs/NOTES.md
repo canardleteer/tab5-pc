@@ -92,6 +92,10 @@ Lessons:
   sends a sector at a time); a read that misses takes 32 KB when it goes on from the last one; and during a
   sequential read, a task on core 0 reads the next 32 KB while the PC runs on core 1. The card reads ~19 MB/s at
   1 MB a command (40 MHz, 4 bits), 15.6 MB/s at 16 KB, 2.7 MB/s at 512 bytes (serial `sdbench`).
+- **Bus-master DMA.** The PIIX3 IDE controller has its bus master (BAR4 at 0xc000, enabled as a BIOS would leave
+  it): a READ/WRITE DMA command moves its sectors by the guest's PRD table, 128 at a time, with one interrupt.
+  Linux uses it through `ata_generic`; the BIOS, DOS and CD-ROM drives stay with PIO. What is left of a Linux disk
+  read is mostly the kernel's own page-cache work.
 - **read(), not fread, for card files.** In ESP-IDF's C library a buffered `fread` from the card goes 512 bytes
   per card command (~1.1 MB/s) and an unbuffered one a byte per call (~0.05 MB/s); `read()` hands FatFs the whole
   request (~10 MB/s). Writes are ~4 MB/s either way.
