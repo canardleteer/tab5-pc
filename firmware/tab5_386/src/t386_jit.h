@@ -1548,6 +1548,9 @@ enum {
 	K_SHXD, K_BT, K_IMUL, K_JCC, K_JMP, K_CALL, K_RET, K_LOOP, K_JMPI, K_CALLI, K_SETCC, K_MOVSEG, K_POPSEG, K_LDSEG, K_LEAVE,
 	K_CLD, K_STD, K_ADCSBB, K_ROT, K_SHIFTCL, K_MULDIV, K_IN, K_OUT, K_STR, K_FLAGOP, K_PUSHA, K_POPA, K_XLAT,
 	K_LAHF, K_SAHF, K_PUSHF, K_POPF, K_PMFAR, K_ROTCL, K_FPU,
+	K_RCX,        // RCL, RCR by CL or by an immediate other than 1 (jit_h_rcx)
+	K_BCD,        // DAA, DAS, AAA, AAS, AAM (not by 0), AAD (jit_h_bcd)
+
 	K_JMPF, K_CALLF, K_RETF, K_FARIND, K_INT, K_IRET,   // real mode
 	K_ENTER, K_BSCAN, K_BSWAP, K_RDTSC, K_FWAIT, K_CMPXCHG, K_XADD,
 };
@@ -2581,6 +2584,85 @@ static u32 jit_h_sahf(CPUI386 *cpu, u32 ah)
 	cpu->flags |= 0x2;
 	return 0;
 }
+// RCL, RCR (kind & 0x100) of x (bits = kind & 63 wide) by cnt, as tiny386's RCL_helper and RCR_helper: by (cnt & 31)
+// mod (bits + 1); jit_rcx_by that count (0: nothing at all, nothing stored); CF and OF set (the pending flags stored)
+static u32 jit_rcx_by;
+static u32 jit_h_rcx(CPUI386 *cpu, u32 x, u32 cnt, u32 kind)
+{
+	const int bits = kind & 63;
+	const u32 y = (cnt & 0x1f) % (bits + 1);
+	jit_rcx_by = y;
+	if (!y) return x;
+	const u32 cf = get_CF(cpu);
+	u32 res;
+	int cf1, of1;
+	if (!(kind & 0x100)) {
+		res = (x << y) | (cf << (y - 1)) | (y != 1 ? (x >> (bits + 1 - y)) : 0);
+		cf1 = (x >> (bits - y)) & 1;
+		of1 = ((res >> (bits - 1)) & 1) ^ cf1;
+	} else {
+		res = (x >> y) | (cf << (bits - y)) | (y != 1 ? (x << (bits + 1 - y)) : 0);
+		cf1 = ((x << (bits - y)) >> (bits - 1)) & 1;
+		of1 = ((res ^ (res << 1)) >> (bits - 1)) & 1;
+	}
+	SET_BIT(cpu->flags, cf1, CF);
+	SET_BIT(cpu->flags, of1, OF);
+	cpu->cc.mask &= ~(CF | OF);
+	return res;
+}
+
+// DAA, DAS, AAA, AAS, AAM (by imm, not 0), AAD of ax (op: the opcode), as tiny386's __DAA_helper and the rest: the new
+// AX (the pending flags stored first)
+static u32 jit_h_bcd(CPUI386 *cpu, u32 ax, u32 op, u32 imm)
+{
+	u32 al = ax & 0xff, ah = (ax >> 8) & 0xff;
+	switch (op) {
+	case 0x27: case 0x2f: {   // DAA, DAS
+		const int cf = get_CF(cpu), das = op == 0x2f;
+		u32 a = al;
+		cpu->flags &= ~CF;
+		if ((al & 0xf) > 9 || get_AF(cpu)) {
+			a = (das ? al - 6 : al + 6) & 0xff;
+			if (cf || (das ? al < 6 : al > 0xff - 6)) cpu->flags |= CF;
+			cpu->flags |= AF;
+		} else {
+			cpu->flags &= ~AF;
+		}
+		if (al > 0x99 || cf) {
+			a = (das ? a - 0x60 : a + 0x60) & 0xff;
+			cpu->flags |= CF;
+		}
+		cpu->cc.dst = sext8(a);
+		cpu->cc.mask = ZF | SF | PF;
+		return (ax & 0xff00) | a;
+	}
+	case 0x37: case 0x3f:   // AAA, AAS (ZF SF PF of the result before: tiny386 leaves cc.dst)
+		if ((al & 0xf) > 9 || get_AF(cpu)) {
+			if (op == 0x37) {
+				ax = (ax + 0x106) & 0xffff;
+			} else {
+				ax = (ax - 6) & 0xffff;
+				ax = (ax & 0xff) | ((((ax >> 8) - 1) & 0xff) << 8);
+			}
+			cpu->flags |= AF | CF;
+		} else {
+			cpu->flags &= ~(AF | CF);
+		}
+		cpu->cc.mask = ZF | SF | PF;
+		return (ax & 0xff00) | (ax & 0xf);
+	default: {   // AAM, AAD
+		u32 res;
+		imm &= 0xff;
+		if (op == 0xd4) { ah = al / imm; res = al % imm; }
+		else { res = (al + ah * imm) & 0xff; ah = 0; }
+		cpu->flags &= ~(OF | AF | CF);
+		cpu->cc.dst = sext8(res);
+		cpu->cc.mask = ZF | SF | PF;
+		return ah << 8 | res;
+	}
+	}
+}
+
 // POPF of v (n bytes; not in virtual-8086 mode), as the fast path: 1 if the block is to be left after it (an
 // interrupt now enabled and waiting, or IOPL changed: JM_IO)
 static int jit_h_popf(CPUI386 *cpu, uword v, int n)
@@ -3433,6 +3515,9 @@ static void jt_classify(JIns *in, u8 mode, bool *ends)
 	switch (b) {
 	case 0x06: case 0x0e: case 0x16: case 0x1e: in->kind = K_PUSH; in->fl = FL_NONE; return;
 	case 0x07: case 0x1f: in->kind = K_POPSEG; in->fl = FL_NONE; return;   // (protected mode: jit_h_ldseg)
+	case 0x17:   // POP SS in real mode, as MOV SS (jit_translate keeps the instruction after it in the block)
+		if (rm_mode && (mode & JM_STACK16)) { in->kind = K_POPSEG; in->fl = FL_NONE; }
+		return;
 	case 0x68: case 0x6a: in->kind = K_PUSH; in->fl = FL_NONE; return;
 	case 0x69: case 0x6b: in->kind = K_IMUL; in->fl = FL_WRITE; return;
 	case 0x80: case 0x81: case 0x82: case 0x83:
@@ -3465,9 +3550,14 @@ static void jt_classify(JIns *in, u8 mode, bool *ends)
 		if (in->reg >= 4 && n > 0 && n < bits) { in->kind = K_SHIFT; in->fl = FL_WRITE; }
 		else if (in->reg < 2 && (b < 0xd0 ? in->imm : 1) >= 1 && (b < 0xd0 ? in->imm : 1) < (u32) bits) in->kind = K_ROT;
 		else if (in->reg < 4 && in->reg >= 2 && n == 1 && (b >= 0xd0 || in->imm == 1)) in->kind = K_ROT;
+		else if (in->reg < 4 && in->reg >= 2 && b < 0xd0) in->kind = K_RCX;   // (FL_READ: CF in, by 0 nothing)
 		return;
 	}
-	case 0xd2: case 0xd3: if (in->reg >= 4) in->kind = K_SHIFTCL; else if (in->reg < 2) in->kind = K_ROTCL; return;
+	case 0xd2: case 0xd3:
+		if (in->reg >= 4) in->kind = K_SHIFTCL; else if (in->reg < 2) in->kind = K_ROTCL; else in->kind = K_RCX;
+		return;
+	case 0x27: case 0x2f: case 0x37: case 0x3f: in->kind = K_BCD; return;   // (FL_READ: CF and AF in)
+	case 0xd4: case 0xd5: if (b == 0xd5 || (in->imm & 0xff)) in->kind = K_BCD; return;   // (AAM by 0: #DE, run in place)
 	case 0xe4: case 0xe5: case 0xec: case 0xed: if (mode & JM_IO) { in->kind = K_IN; in->fl = FL_NONE; } return;
 	case 0xe6: case 0xe7: case 0xee: case 0xef: if (mode & JM_IO) { in->kind = K_OUT; in->fl = FL_NONE; } return;
 	case 0xa4: case 0xa5: case 0xaa: case 0xab: case 0xac: case 0xad:
@@ -3596,7 +3686,7 @@ static bool jt_rmw_ins(const JIns *in)   // does it read-modify-write a memory o
 	switch (in->kind) {
 	case K_ALU: return (in->op < 0x40 ? (in->op & 7) < 2 : true) && (in->op < 0x40 ? in->op >> 3 : in->reg) != 7;
 	case K_INCDEC: return in->op >= 0xfe;
-	case K_NOTNEG: case K_SHIFT: case K_ROT: case K_SHIFTCL: case K_ROTCL: return true;
+	case K_NOTNEG: case K_SHIFT: case K_ROT: case K_SHIFTCL: case K_ROTCL: case K_RCX: return true;
 	case K_ADCSBB: return in->op < 0x40 ? (in->op & 7) < 2 : true;
 	case K_XCHG: return in->op == 0x86 || in->op == 0x87;
 	case K_BT: return in->op == 0xba ? in->reg != 4 : in->op != 0xa3;
@@ -4089,6 +4179,56 @@ static u32 jit_h_repstr(u8 *d, uintptr_t s, u32 bytes, u32 kind)
 	return bytes;
 }
 
+// REP MOVS / STOS between plain RAM and the VGA window (A0000-BFFFF), what jt_repstr's fast way doesn't take (not
+// RAM): tried before the interpreter, without paging and with DF clear. jit_repio_regs: ECX, ESI, EDI in and out;
+// kind: the element's bytes | 0x100 MOVS | 0x200 16-bit addresses | the source segment << 12; v: STOS's value.
+// Each element as the interpreter writes or reads it (fast_io_write / fast_io_read: t386_vga_ext.h's fast paths,
+// else tiny386's callbacks), the text modes' bulk write for a MOVS into the window. 1 if done, 0 to the interpreter
+// (RAM with translated code to write, the A20 gate's wrapping, a 64 KB wrap, ...)
+bool t386_vga_text_write_string(uint32_t off, const uint8_t *buf, int len);   // (t386_vga_ext.h)
+static bool repio_pages(uword a, u32 bytes, bool write)   // plain RAM (to write: without translated code)?
+{
+	for (uword p = a >> 12; p <= (a + bytes - 1) >> 12; p++)
+		if (write ? t386_pagemap[p] != PM_RAM : (s8) t386_pagemap[p] < 0) return false;
+	return true;
+}
+static u32 jit_repio_regs[3];
+static int jit_h_repio(CPUI386 *cpu, u32 kind, u32 v)
+{
+	const u32 n = kind & 7, a16 = kind & 0x200;
+	const bool movs = kind & 0x100;
+	const u32 m = a16 ? 0xffff : 0xffffffff;
+	const u32 cnt = jit_repio_regs[0] & m, si = jit_repio_regs[1] & m, di = jit_repio_regs[2] & m;
+	if (!cnt || cnt > 0x40000 || (cpu->cr0 & 0x80000000)) return 0;
+	const u32 bytes = cnt * n;
+	if (a16 && (di + bytes > 0x10000 || (movs && si + bytes > 0x10000))) return 0;
+	const uword d = cpu->seg[SEG_ES].base + di, sl = movs ? cpu->seg[(kind >> 12) & 7].base + si : 0;
+	const bool pm = cpu->cr0 & 1;
+	u8 *mem = (u8 *) cpu->phys_mem;
+#define REPIO_RAM(a, write) ((((a) + bytes <= 0xa0000) || (pm && (a) >= 0x100000 && (a) + bytes <= (uword) cpu->phys_mem_size)) && \
+	                     repio_pages(a, bytes, write))
+	if (d >= 0xa0000 && d + bytes <= 0xc0000 && (!movs || REPIO_RAM(sl, false))) {   // into the window
+		if (!movs || !t386_vga_text_write_string(d - 0xa0000, mem + sl, bytes))
+			for (u32 i = 0; i < bytes; i += n) {
+				u32 x = v;
+				if (movs) { x = 0; memcpy(&x, mem + sl + i, n); }
+				fast_io_write(cpu, d + i, n, x);
+			}
+	} else if (movs && sl >= 0xa0000 && sl + bytes <= 0xc0000 && REPIO_RAM(d, true)) {   // out of it, into RAM
+		for (u32 i = 0; i < bytes; i += n) {
+			const u32 x = fast_io_read(cpu, sl + i, n);
+			memcpy(mem + d + i, &x, n);
+		}
+	} else {
+		return 0;
+	}
+#undef REPIO_RAM
+	jit_repio_regs[0] &= ~m;
+	if (movs) jit_repio_regs[1] = (jit_repio_regs[1] & ~m) | ((si + bytes) & m);
+	jit_repio_regs[2] = (jit_repio_regs[2] & ~m) | ((di + bytes) & m);
+	return 1;
+}
+
 // REPE / REPNE CMPS, SCAS from translated code (K_REPCMP), the same way: compares the elements of n (kind & 7) at
 // host address s (CMPS; SCAS, kind & 0x100: the value s) with those at d, at most bytes of them, until one pair is
 // unequal (REPE, kind & 0x200) or equal (REPNE). Returns the bytes compared; the last pair in jit_cmp_l (s's side),
@@ -4234,11 +4374,31 @@ static void jt_repstr(const JIns *in, int bits)
 	e_branch_to(BNE, T1, X0, top);   // more: the next part
 	u32 *done = e_jump();
 	for (int k = 0; k < ns; k++) j_bind(slow[k], jp);
+	u32 *done3 = NULL;
+	if (!lods) {   // the VGA window and RAM (jit_h_repio), else the interpreter
+		const uword regs = (uword) (uintptr_t) jit_repio_regs;
+		e_li(T0, regs);
+		e_sw(jg[1], T0, 0);
+		e_sw(jg[6], T0, 4);
+		e_sw(jg[7], T0, 8);
+		if (!movs) jt_get_r(A2, 0, n * 8);
+		e_li(A1, n | (movs ? 0x100 : 0) | (in->adsz16 ? 0x200 : 0) | (in->seg >= 0 ? in->seg : SEG_DS) << 12);
+		e_mv(A0, R_CPU);
+		e_call((const void *) jit_h_repio);
+		u32 *no = e_branch(BEQ, A0, X0);
+		e_li(T0, regs);
+		e_lw(jg[1], T0, 0);
+		e_lw(jg[6], T0, 4);
+		e_lw(jg[7], T0, 8);
+		done3 = e_jump();
+		j_bind(no, jp);
+	}
 	jt_interp(in);
 	u32 *done2 = e_jump();
 	j_bind(none, jp);
 	j_bind(done, jp);
 	j_bind(done2, jp);
+	if (done3) j_bind(done3, jp);
 }
 
 // REPE / REPNE CMPS, SCAS (jit_h_repcmp), the same way: the flags those of the last pair compared (in cpu->cc
@@ -5249,6 +5409,35 @@ static JIT_SMALL void jt_emit(const JIns *in)
 		jt_set_r(0, T2, 8, true);
 		break;
 	}
+	case K_RCX: {   // RCL, RCR by CL or an immediate (jit_h_rcx: the operand stored unless the count comes to 0)
+		if (!(b & 1)) bits = 8;
+		const bool mem = in->mod != 3;
+		jt_flags_store();
+		jt_get_e(in, T2, bits, true);
+		if (mem) { e_addi(SP, SP, -16); e_sw(T1, SP, 0); }   // (the operand's host address, for jt_put_e)
+		e_mv(A1, T2);
+		if (b >= 0xd0) e_andi(A2, jg[1], 255); else e_li(A2, in->imm & 0xff);
+		e_li(A3, bits | (in->reg == 3 ? 0x100 : 0));
+		e_mv(A0, R_CPU);
+		e_call((const void *) jit_h_rcx);
+		if (mem) { e_lw(T1, SP, 0); e_addi(SP, SP, 16); }
+		e_lw_abs(T2, &jit_rcx_by);
+		u32 *none = e_branch(BEQ, T2, X0);
+		jt_put_e(in, A0, bits, true, false);
+		j_bind(none, jp);
+		jt_pf = PF_NONE;
+		break;
+	}
+	case K_BCD:
+		jt_flags_store();
+		jt_get_r(A1, 0, 16);
+		e_li(A2, b);
+		e_li(A3, in->imm & 0xff);
+		e_mv(A0, R_CPU);
+		e_call((const void *) jit_h_bcd);
+		jt_set_r(0, A0, 16, true);
+		jt_pf = PF_NONE;
+		break;
 	case K_LAHF:
 		jt_flags_store();
 		e_mv(A0, R_CPU);
@@ -5797,7 +5986,10 @@ static void jt_emit_stubs(void)
 }
 
 static inline bool jt_is_sti(const JIns *in) { return in->kind == K_FLAGOP && in->op == 0xfb && !in->two; }
-static inline bool jt_is_movss(const JIns *in) { return in->kind == K_MOVSEG && in->op == 0x8e && in->reg == SEG_SS; }
+static inline bool jt_is_movss(const JIns *in)   // MOV SS or POP SS
+{
+	return (in->kind == K_MOVSEG && in->op == 0x8e && in->reg == SEG_SS) || (in->kind == K_POPSEG && in->op == 0x17);
+}
 
 // Decode and translate the block at CS:eip (linear lin); NULL if not even its first instruction can be.
 // (phys: the physical address of lin; with paging, JM_PAGED, the block stays within that page)

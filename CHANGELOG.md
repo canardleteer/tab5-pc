@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The last instructions that DOS programs commonly ran in the interpreter are translated: RCL and RCR by CL or by a
+  count, the BCD instructions (DAA, DAS, AAA, AAS, AAM, AAD), and POP SS in real mode; and REP MOVS and REP STOS
+  between memory and the VGA window (text and graphics video memory) no longer go through the interpreter. With
+  cold caches, which is how code that runs now and then meets the CPU, an interpreted instruction cost tens of
+  microseconds. With the changes below, a DOS benchmark's score goes from 83 to about 184; 3D games, a desktop
+  start and Linux measure the same as before.
 - Text on the screen is faster for DOS programs: reads and writes of text-mode video memory (and CGA modes') go
   straight to the emulated VGA's memory from every part of the emulator, instead of a byte or a character at a time
   through the general VGA code. With the change below, a DOS benchmark's score goes from 83 to about 134 (its video
