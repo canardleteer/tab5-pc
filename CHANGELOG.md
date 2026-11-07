@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- The 486 CPU (`gen = 4`) is a 486 with CPUID (patch 0026): programs can set the EFLAGS ID bit, and CPUID reports
+  the 486's features only (the FPU; no time-stamp counter or CMPXCHG8B, which came with the Pentium). Before, CPUID
+  answered but the ID bit stayed fixed, so programs that check the bit first took the CPU for an early 486 without
+  CPUID; a benchmark's CPU detection then probed for a 386SL/486SL with interrupts off, left them off, and hung.
 - The PC's IDE controller can do bus-master DMA (the emulated PIIX3's bus master, patch 0025): a disk read or write
   from Linux moves its sectors to or from memory in one go, with one interrupt, instead of a sector at a time
   through the data port. Sprig Linux 1.5.0's kernels use it (disk reads ~3.7 -> ~4.1 MB/s, writes ~18% faster);
