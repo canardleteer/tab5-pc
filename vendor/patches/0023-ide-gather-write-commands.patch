@@ -3,6 +3,8 @@ written to the image together, when the command ends or the buffer is full. The 
 SECTORS, one sector per block) and Linux (WRITE MULTIPLE, 4 sectors per block) had each block written on
 its own, and an SD card takes many small writes much longer than one big one. The command still completes
 only once its sectors are written; one abandoned midway (another command) writes nothing of what it gathered.
+If the write fails, the sector registers go back to the first sector not written, with the count from there, as
+when each block was written on its own.
 
 --- a/ide.c
 +++ b/ide.c
@@ -30,11 +32,11 @@ only once its sectors are written; one abandoned midway (another command) writes
  {
      int64_t sector_num;
 -    int ret;
-+    int ret, n = s->io_nb_sectors;
++    int ret, n = s->io_nb_sectors, gathered = 0;
  
      ide_transfer_stop(s);
      sector_num = ide_get_sector(s);
-@@ -649,6 +654,26 @@
+@@ -649,10 +654,38 @@
      printf("write sector=%" PRId64 "  count=%d\n",
             sector_num, s->io_nb_sectors);
  #endif
@@ -44,6 +46,7 @@ only once its sectors are written; one abandoned midway (another command) writes
 +    if (!s->wbuf)
 +        s->wbuf = malloc(WRITE_GATHER_SECTORS * 512); /* (not pcmalloc: little room there) */
 +    if (s->wbuf) {
++        gathered = 1;
 +        if (!s->wcount)
 +            s->wsector = sector_num;
 +        memcpy(s->wbuf + s->wcount * 512, s->io_buffer, n * 512);
@@ -61,7 +64,18 @@ only once its sectors are written; one abandoned midway (another command) writes
      ret = s->bs->write_async(s->bs, sector_num, s->io_buffer, s->io_nb_sectors, 
                               ide_sector_write_cb2, s);
      if (ret < 0) {
-@@ -689,6 +714,7 @@
+         /* error */
++        if (gathered) {
++            /* the registers back at the first sector not written, as if
++               each block had been written on its own (the blocks gathered
++               before this one had moved them on) */
++            ide_set_sector(s, s->wsector);
++            s->nsector = (s->nsector + n - s->io_nb_sectors) & 0xff;
++        }
+         ide_abort_command(s);
+         ide_set_irq(s);
+     } else if (ret == 0) {
+@@ -689,6 +722,7 @@
  static void ide_sector_write(IDEState *s)
  {
      int n;

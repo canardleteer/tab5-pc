@@ -83,9 +83,9 @@ stay PIO (they accept a PIO transfer mode). The BIOS and DOS keep using PIO.
 -        s->wbuf = malloc(WRITE_GATHER_SECTORS * 512); /* (not pcmalloc: little room there) */
 +        s->wbuf = ide_buf_alloc(); /* (not pcmalloc: little room there) */
      if (s->wbuf) {
+         gathered = 1;
          if (!s->wcount)
-             s->wsector = sector_num;
-@@ -725,6 +748,180 @@
+@@ -733,6 +756,180 @@
      s->status = READY_STAT | SEEK_STAT | DRQ_STAT;
  }
  
@@ -266,7 +266,7 @@ stay PIO (they accept a PIO transfer mode). The BIOS and DOS keep using PIO.
  static void ide_identify_cb(IDEState *s)
  {
      ide_transfer_stop(s);
-@@ -736,6 +933,11 @@
+@@ -744,6 +941,11 @@
  #if defined(DEBUG_IDE)
      printf("ide: exec_cmd=0x%02x\n", val);
  #endif
@@ -278,7 +278,7 @@ stay PIO (they accept a PIO transfer mode). The BIOS and DOS keep using PIO.
      switch(val) {
      case WIN_IDENTIFY:
          ide_identify(s);
-@@ -790,6 +992,37 @@
+@@ -798,6 +1000,37 @@
              ide_sector_write(s);
          }
          break;
@@ -316,7 +316,7 @@ stay PIO (they accept a PIO transfer mode). The BIOS and DOS keep using PIO.
      case WIN_READ_NATIVE_MAX:
          ide_set_sector(s, s->nb_sectors - 1);
          s->status = READY_STAT;
-@@ -1553,6 +1786,14 @@
+@@ -1561,6 +1794,14 @@
          ide_transfer_start2(s, 0, 512, ide_transfer_stop2);
          ide_set_irq(s);
          break;
@@ -331,7 +331,7 @@ stay PIO (they accept a PIO transfer mode). The BIOS and DOS keep using PIO.
      case WIN_IDENTIFY:
      case WIN_READ:
          ide_set_signature(s);
-@@ -1697,8 +1938,10 @@
+@@ -1705,8 +1946,10 @@
              if (s) {
                  s->status = BUSY_STAT | SEEK_STAT;
                  s->error = 0x01;
@@ -342,7 +342,7 @@ stay PIO (they accept a PIO transfer mode). The BIOS and DOS keep using PIO.
      } else if ((s1->cmd & IDE_CMD_RESET) && !(val & IDE_CMD_RESET)) {
          /* high to low */
          for(i = 0; i < 2; i++) {
-@@ -1869,6 +2112,7 @@
+@@ -1877,6 +2120,7 @@
          s->bs->get_chs(s->bs, &s->cylinders, &s->heads, &s->sectors);
  
      s->mult_sectors = MAX_MULT_SECTORS;
@@ -350,7 +350,7 @@ stay PIO (they accept a PIO transfer mode). The BIOS and DOS keep using PIO.
      /* ide regs */
      s->feature = 0;
      s->error = 0;
-@@ -2450,11 +2694,37 @@
+@@ -2458,11 +2702,37 @@
      return 0;
  }
  
