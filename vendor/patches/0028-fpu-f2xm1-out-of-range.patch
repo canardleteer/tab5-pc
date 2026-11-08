@@ -1,0 +1,19 @@
+F2XM1 outside its range (-1 to +1), where Intel documents the result as undefined, computed 2^x - 1 like any other
+operand. A DOS system information program identifies the FPU by F2XM1 of pi and accepts only the answers Intel FPUs
+give, one of them the operand left as it was; tiny386's 7.82 made it report a "Non-Intel" coprocessor. Now a finite
+operand beyond +-1 is left as it was; in range (what exp() and pow() code use) nothing changes.
+
+diff --git a/fpu.c b/fpu.c
+--- a/fpu.c
++++ b/fpu.c
+@@ -1131,6 +1131,10 @@
+ 			temp = fpget(fpu, 0);
+ 			switch (i) {
+ 			case 0: // F2XM1
++				/* outside -1..+1 the result is undefined: left as it was, one
++				   of an Intel FPU's answers, which CPU detectors check for */
++				if (isfinite(temp) && fabs(temp) > 1)
++					break;
+ 				fpset(fpu, 0, pow(2.0, temp) - 1);
+ 				break;
+ 			case 1: // FYL2X
