@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- WiFi now starts as you last left it, on or off, after a power-off or a crash too; before, it came back on only
+  after a restart from the web page.
 - More instructions stay in translated code: REP string instructions with the direction flag set (backward
   searches and copies, such as a C library's overlapping memmove), LAR and LSL in protected mode, and 16-bit SHLD
   and SHRD. With paging on, a REP string instruction whose page isn't in the fast TLB yet now fills it and carries on

@@ -29,11 +29,12 @@ static void wifi_load() {
 
 // Start joining a network (wifi_poll() follows it up). The credentials are saved once it works.
 static void wifi_enable(bool on);
+static void wifi_choose(bool on);
 static void wifi_start(const String& ssid, const String& pass) {
   if (g_wifi == WIFI_DISABLED) {
     g_ssid = ssid;   // switching on joins it
     g_pass = pass;
-    wifi_enable(true);
+    wifi_choose(true);
     return;
   }
   g_try_ssid = ssid;
@@ -80,6 +81,13 @@ static void wifi_enable(bool on) {
     g_wifi = WIFI_DISABLED;
     Serial.println("wifi: off");
   }
+}
+
+// Switch WiFi on or off as the user chose (the settings panel's switch, serial "wifi on|off", a network picked) and
+// remember it: the Tab5 starts with WiFi as it was last chosen, after a power-off or a crash too (tab5_386.ino)
+static void wifi_choose(bool on) {
+  if (g_prefs.getBool("wifi", false) != on) g_prefs.putBool("wifi", on);
+  wifi_enable(on);
 }
 
 static void wifi_poll() {

@@ -876,7 +876,7 @@ static void ui_wifi_request_do() {
   if (g_wifi_request < 0) return;
   const bool on = g_wifi_request;
   g_wifi_request = -1;
-  wifi_enable(on);
+  wifi_choose(on);
 }
 
 static void ui_setup() {

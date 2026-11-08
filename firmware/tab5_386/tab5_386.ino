@@ -752,7 +752,7 @@ static void handle_serial() {
     } else if (line.startsWith("vol ")) {
       set_volume(line.substring(4).toInt());
     } else if (line == "wifi on" || line == "wifi off") {
-      wifi_enable(line == "wifi on");
+      wifi_choose(line == "wifi on");
     } else if (line.startsWith("wifi ")) {   // wifi <ssid> <password> (switches WiFi on)
       const String rest = line.substring(5);
       const int sp = rest.indexOf(' ');
@@ -903,8 +903,8 @@ static void display_task(void*) {
   if (g_setup_needed) {   // nothing on the card yet: Wi-Fi on, and the panel's Install DOS / Install Linux
     wifi_enable(true);
     panel_open();
-  } else if (g_prefs.getBool("wifiback", false)) {   // restarted with WiFi on (web.h, restart_tab5): on again
-    g_prefs.remove("wifiback");
+  } else if (g_prefs.getBool("wifi", false) || g_prefs.getBool("wifiback", false)) {   // WiFi on as last chosen
+    g_prefs.remove("wifiback");   // (net.h, wifi_choose), or restarted with it on (web.h, restart_tab5): on again
     wifi_enable(true);
   }
   for (;;) {
