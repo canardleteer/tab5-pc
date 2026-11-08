@@ -112,6 +112,7 @@ void t386_tlb_forget(void);   // (t386_fast.h)
 #define fprintf t386_fprintf
 #pragma GCC optimize("O3")
 #include "pc.c"
+#include "t386_pit_word.h"
 
 // The linear frame buffer's writes mark what they change (t386_vga_fw.h, t386_vram_mark): pc.c's iomem callbacks,
 // wrapped by t386_lfb_hooks() after pc_new
@@ -150,6 +151,7 @@ static void t386_set_pci_vga_bar(void* opaque, int bar_num, uint32_t addr, bool 
 }
 #include "t386_accel.h"   // (the 2D engine for Linux's graphics console)
 void t386_lfb_hooks(void) {
+    t386_cb->io_read16 = t386_pit_word_read;
     t386_cb->iomem_write8 = t386_iomem_write8;
     t386_cb->iomem_write16 = t386_iomem_write16;
     t386_cb->iomem_write32 = t386_iomem_write32;

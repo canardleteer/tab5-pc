@@ -66,6 +66,19 @@ build, and `loads` and `sdbench` report that raw mapping and the SDMMC benchmark
 SPI mount neither formats the card nor restarts the Tab5; the PC starts without disks, as it does when no card
 is present.
 
+### PIT word-input regression
+
+After fetching the vendor sources, run `python3 tools/test_pit_word.py` with a host C compiler. It checks the
+production adapter against the pinned timer model: changing counters, adjacent-port byte order and unchanged
+dispatch for other word ports. It needs neither the Arduino toolchain nor a QEMU installation.
+
+The PIT exposes byte-wide ports. A word input at port 40h must read ports 40h and 41h in little-endian order;
+returning a constant FFFF leaves programs waiting for a counter change. This follows
+[QEMU 8.2.2's byte-wide PIT dispatch](https://github.com/qemu/qemu/blob/v8.2.2/hw/timer/i8254.c) and its
+[little-endian access splitting](https://github.com/qemu/qemu/blob/v8.2.2/system/memory.c). QEMU is a comparison
+reference, as in the existing [development notes](docs/NOTES.md#making-the-cpu-fast); the timer model itself is
+QEMU-derived (see `THIRD_PARTY_NOTICES.md`). Other word-input ports retain their existing handlers.
+
 ## First start: FreeDOS on an empty card
 
 1. Put an empty card in the Tab5 and switch it on. With nothing on the card, the settings panel opens with Wi-Fi
