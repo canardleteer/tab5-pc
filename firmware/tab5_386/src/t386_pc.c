@@ -113,6 +113,15 @@ void t386_tlb_forget(void);   // (t386_fast.h)
 #pragma GCC optimize("O3")
 #include "pc.c"
 
+// Word IN at port 40h uses ISA byte reads at 40h and 41h; tiny386 otherwise returns FFFF.
+static u16 t386_io_read16(void* opaque, int port) {
+    if (port == 0x40) {
+        const u16 low = pc_io_read(opaque, 0x40);
+        return low | (pc_io_read(opaque, 0x41) << 8);
+    }
+    return pc_io_read16(opaque, port);
+}
+
 // The linear frame buffer's writes mark what they change (t386_vga_fw.h, t386_vram_mark): pc.c's iomem callbacks,
 // wrapped by t386_lfb_hooks() after pc_new
 #define T386_LFB_WRITE(f, T, size) \
@@ -150,6 +159,7 @@ static void t386_set_pci_vga_bar(void* opaque, int bar_num, uint32_t addr, bool 
 }
 #include "t386_accel.h"   // (the 2D engine for Linux's graphics console)
 void t386_lfb_hooks(void) {
+    t386_cb->io_read16 = t386_io_read16;
     t386_cb->iomem_write8 = t386_iomem_write8;
     t386_cb->iomem_write16 = t386_iomem_write16;
     t386_cb->iomem_write32 = t386_iomem_write32;
