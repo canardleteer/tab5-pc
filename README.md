@@ -39,13 +39,14 @@ one). It is also in M5Burner. To write it yourself:
 
 ```
 tools/fetch_vendor.sh            # tiny386 at the pinned commit (with the patches in vendor/patches),
-                                 # its SeaBIOS images, and ESP-Hosted's SDIO driver
+                                 # its SeaBIOS images (the BIOS built here), and ESP-Hosted's SDIO driver
 tools/build.sh upload            # build and flash (port /dev/ttyACM0; or: tools/build.sh upload /dev/ttyACM1)
 ```
 
-The BIOS (SeaBIOS) comes from tiny386's release and is checked against the tested images pinned in
-`vendor/bios.lock`. If that release has moved on, `BIOS_FROM_SOURCE=1 tools/fetch_vendor.sh` builds it from the
-pinned source instead (needs a gcc that can build 32-bit x86 code).
+The BIOS (SeaBIOS) is built from the pinned source with tiny386's patch, as `vendor/patches/0027` changes it (it
+reports the math coprocessor), and the VGA BIOS comes from tiny386's release; both are checked against the tested
+images pinned in `vendor/bios.lock`. Building the BIOS needs a gcc that can build 32-bit x86 code (on Debian or
+Ubuntu, `gcc-multilib`). `BIOS_FROM_SOURCE=1 tools/fetch_vendor.sh` builds the VGA BIOS from source too.
 
 ESP32-P4 chips come in two families: `esptool` reports "revision v1.x" for earlier ones (the default build) and
 v3.x for later ones: `CHIP=postv3 tools/build.sh upload`. A build for the wrong family does not start.

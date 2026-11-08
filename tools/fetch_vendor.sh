@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Fetch tiny386 at the pinned commit (vendor/tiny386.commit) into vendor/tiny386, and the BIOS images from its
-# release into vendor/ (bios.bin, vgabios.bin; built into the firmware by tools/gen_bios.sh), checked against the
-# pinned ones (vendor/bios.lock, tools/check_bios.py). BIOS_FROM_SOURCE=1 builds them from the pinned SeaBIOS source
-# instead (tools/build_seabios.sh).
+# Fetch tiny386 at the pinned commit (vendor/tiny386.commit) into vendor/tiny386, the VGA BIOS from its release into
+# vendor/vgabios.bin, and build vendor/bios.bin from the pinned SeaBIOS source with tiny386's seabios/patch as
+# vendor/patches changes it (tools/build_seabios.sh: needs a gcc that builds 32-bit x86 code); both built into the
+# firmware by tools/gen_bios.sh and checked against vendor/bios.lock (tools/check_bios.py). BIOS_FROM_SOURCE=1 builds
+# the VGA BIOS from source too.
 # Also ESP-Hosted's SDIO driver (vendor/esp-hosted.commit) into vendor/esp-hosted, see below.
 set -euo pipefail
 cd "$(dirname "$0")/../vendor"
@@ -19,13 +20,15 @@ make -C tiny386 prepare HOSTCC=${HOSTCC:-cc}
 if [[ "${BIOS_FROM_SOURCE:-0}" == 1 ]]; then
   ../tools/build_seabios.sh
 else
-  if [[ ! -f bios.bin || ! -f vgabios.bin ]]; then
+  if [[ ! -f vgabios.bin ]]; then
     rm -rf tiny386-release && mkdir tiny386-release
     gh release download continuous -R hchunhui/tiny386 -p tiny386.tar.xz -D tiny386-release
     tar xJf tiny386-release/tiny386.tar.xz -C tiny386-release
-    cp tiny386-release/tiny386/bios.bin tiny386-release/tiny386/vgabios.bin .
+    cp tiny386-release/tiny386/vgabios.bin .
   fi
-  python3 ../tools/check_bios.py .
+  # (the release's bios.bin has tiny386's seabios/patch as it was: patch 0027 changes it, so it is built here)
+  [[ -f bios.bin ]] || BIOS_ONLY=1 ../tools/build_seabios.sh
+  python3 ../tools/check_bios.py --built bios.bin .
 fi
 echo "tiny386 $COMMIT ready"
 

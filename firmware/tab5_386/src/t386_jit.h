@@ -3456,11 +3456,71 @@ static void jit_rt_restore(void)
 	if (jit_rt_first.jit_rt_at) { JIT_RT(JIT_RT_RESTORE) jit_rt_copies = 1; }
 	memset(jit_x87_memo, 0, sizeof jit_x87_memo);   // (the first copy's pool, emptied)
 }
+// A read-modify-write in a page whose writes are checked (STUB_RMW) comes here first: RAM with translated code in its
+// page but not in the 64-byte lines it touches (jit_codelines; data beside code: a DOS program's variables, a
+// benchmark's stack in the buffer it copied its loop to) and not into the next page is plain RAM after all, t6 1;
+// anything else goes on to t386_jit_rmw1/2/4 (jumped to: they return to the stub). t0 the linear address; every
+// register but t6 kept.
+static u32 *jit_rmw_chk[3];
+static void jit_make_rmw_checks(void)
+{
+	static void (*const slows[3])(void) = { t386_jit_rmw1, t386_jit_rmw2, t386_jit_rmw4 };
+	for (int w = 0; w < 3; w++) {
+		const int n = 1 << w;
+		jit_rmw_chk[w] = jp;
+		e_addi(SP, SP, -16);
+		e_sw(T1, SP, 8);
+		e_sw(T2, SP, 4);
+		e_sw(T3, SP, 0);
+		u32 *slow[4];
+		int ns = 0;
+		e_srli(T1, T0, 12);
+		e_add(T1, T1, R_MAP);
+		e_lbu(T1, T1, 0);
+		e_andi(T1, T1, ~(PM_CODE | PM_CODE_NEXT) & 0xff);
+		slow[ns++] = e_branch(BNE, T1, X0);
+		if (n > 1) {
+			e_addi(T1, T0, n - 1);
+			e_xor(T1, T1, T0);
+			e_srli(T1, T1, 12);
+			slow[ns++] = e_branch(BNE, T1, X0);
+		}
+		e_li(T3, (u32) (uintptr_t) jit_codelines);
+		for (int k = 0; k < (n > 1 ? 2 : 1); k++) {   // the first byte's line, and the last's
+			e_addi(T1, T0, k ? n - 1 : 0);
+			e_srli(T1, T1, 6);
+			e_srli(T2, T1, 3);
+			e_add(T2, T2, T3);
+			e_lbu(T2, T2, 0);
+			e_andi(T1, T1, 7);
+			e_srl(T2, T2, T1);
+			e_andi(T2, T2, 1);
+			slow[ns++] = e_branch(BNE, T2, X0);
+		}
+		e_lw(T1, SP, 8);
+		e_lw(T2, SP, 4);
+		e_lw(T3, SP, 0);
+		e_addi(SP, SP, 16);
+		e_li(T6, 1);
+		e_jalr(X0, RA, 0);
+		for (int k = 0; k < ns; k++) j_bind(slow[k], jp);
+		e_lw(T1, SP, 8);
+		e_lw(T2, SP, 4);
+		e_lw(T3, SP, 0);
+		e_addi(SP, SP, 16);
+		const u32 t = (u32) (uintptr_t) slows[w];   // (through t6: ra is the stub's)
+		const s32 lo = (s32) (t << 20) >> 20;
+		e_lui(T6, t - (u32) lo);
+		e_jalr(X0, T6, lo);
+	}
+}
+
 static void jit_make_routines(void)   // (at jp)
 {
 	u32 *at = jp;
 	jit_make_fstores();
 	jit_make_vga_writes();
+	jit_make_rmw_checks();
 	jit_make_shared();
 	jit_rt_at = at;
 	if ((u8 *) jp - (u8 *) at > JIT_RT_MAX) abort();
@@ -5946,7 +6006,7 @@ static void jt_emit_stubs(void)
 			break;
 		}
 		case STUB_RMW: {   // plain RAM after all? back with its host address in t1; else as STUB_EXIT
-			e_call_abs(st->size == 1 ? (void *) t386_jit_rmw1 : st->size == 2 ? (void *) t386_jit_rmw2 : (void *) t386_jit_rmw4);
+			e_call_near(jit_rmw_chk[st->size == 1 ? 0 : st->size == 2 ? 1 : 2]);
 			u32 *no = e_branch(BEQ, T6, X0);
 			e_add(T1, T0, R_MEM);
 			j_bind(e_jump(), st->resume);

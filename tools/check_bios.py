@@ -6,7 +6,9 @@ stamp: SeaBIOS writes the build's date and host into its version string (rel-...
 BIOS's option ROM checksum (byte 6) follows from it. tiny386's continuous release is rebuilt with each upstream push,
 so its images change in those bytes alone while the SeaBIOS source stays the same.
 
-    tools/check_bios.py [DIR]      (default: vendor/)
+    tools/check_bios.py [--built NAME]... [DIR]      (default: vendor/)
+--built NAME: that image was built here (tools/build_seabios.sh): another compiler's bytes differ from the tested
+build's, so it passes if its SeaBIOS version is the pinned one.
 """
 import hashlib
 import os
@@ -32,7 +34,11 @@ def unstamped(data):
 
 
 def main():
-    folder = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "vendor")
+    args, built = sys.argv[1:], set()
+    while len(args) >= 2 and args[0] == "--built":
+        built.add(args[1])
+        args = args[2:]
+    folder = args[0] if args else os.path.join(ROOT, "vendor")
     pins, want_version = {}, None
     for line in open(os.path.join(ROOT, "vendor", "bios.lock")):
         f = line.split()
@@ -49,6 +55,8 @@ def main():
             print(f"{name}: the pinned image ({version(data)})")
         elif hashlib.sha256(unstamped(data)).hexdigest() == blanked:
             print(f"{name}: the pinned build ({version(data)}), with another build stamp")
+        elif name in built and version(data) == want_version:
+            print(f"{name}: built here from the pinned source ({version(data)}; another compiler than the tested build's)")
         else:
             print(f"{name}: not the pinned image (SeaBIOS {version(data)}; pinned: {want_version})", file=sys.stderr)
             ok = False

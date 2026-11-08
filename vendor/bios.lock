@@ -4,11 +4,13 @@
 # Source: SeaBIOS (LGPL-3.0, https://github.com/coreboot/seabios) at the commit below, with tiny386's seabios/patch
 # and seabios/config (https://github.com/hchunhui/tiny386: last changed in f3dfd17129d90676063e4da32b6d6f9faf1c4de0,
 # the same files as at vendor/tiny386.commit), then "make oldconfig && make".
-# The tested images are from tiny386's continuous release, built by its CI (scripts/build.sh) for tiny386
-# d81e225783cd27568e7ff60605a722cdade524bf on 2026-10-21 (GitHub Actions run 39604441763).
+# vgabios.bin is from tiny386's continuous release, built by its CI (scripts/build.sh) for tiny386
+# d81e225783cd27568e7ff60605a722cdade524bf on 2026-10-21 (GitHub Actions run 39604441763). bios.bin is built here by
+# tools/build_seabios.sh (2026-11-07) from the same SeaBIOS source with tiny386's seabios/patch as vendor/patches/0027
+# changes it: the equipment word's math coprocessor from CMOS byte 14h bit 1 (tiny386 sets it when the FPU is on).
 #
 # file         sha256 of the image                                               sha256 with the build stamp blanked
 seabios        81ec9ec0bcf45df11fb7f98339ec9036b546fca0
 version        rel-1.17.0-20-g81ec9ec0-dirty
-bios.bin       1af9de55633461badc127c450187fd479008d86d5b81a7b5df6fc4812315924d  72771061b01b5c71f7d53053e576757b6365708df216200fefc5412a509c1c1b
+bios.bin       870eade6b1b843596196a5d1660fd5b452724eab2ab9530374363afac86f672c  5cc28e0e17d08c6e77c6e858b2ad124ce0593c057e1fbdbb73242bac9260a9b6
 vgabios.bin    22cbc9ae652005be34c1329e0e7d8c8e0ec6dcd97342b3a2f81089a4a64fc288  a41eb41bd7dbf64fa7f931331ce73fb6fbce4698908215d9be3b41e7a7509972

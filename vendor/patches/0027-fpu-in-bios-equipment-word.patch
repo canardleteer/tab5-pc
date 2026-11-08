@@ -1,0 +1,49 @@
+The BIOS reported no math coprocessor even with the FPU on: the equipment word's bit 1 (INT 11h, BIOS data area
+40:10) stayed clear, as tiny386's SeaBIOS patch has it (from before tiny386 had an FPU). Programs that ask the BIOS
+then leave the FPU alone: one built with a C compiler's floating-point emulator (INT 34h-3Dh) does its floating
+point in software, through an interrupt per operation; a DOS benchmark's FPU test measured 6.5 "MHz" (205 with the
+bit set). Now pc.c sets bit 1 of CMOS byte 14h (the equipment byte's math coprocessor) when the FPU is on, and the
+SeaBIOS patch sets the equipment word's bit from it in place of never. (vendor/bios.bin is built with it:
+tools/build_seabios.sh.)
+
+diff --git a/pc.c b/pc.c
+index 653a0d9..c5223f3 100644
+--- a/pc.c
++++ b/pc.c
+@@ -810,6 +810,8 @@ PC *pc_new(SimpleFBDrawFunc *redraw, void *redraw_data,
+ 	pc->pit = i8254_init(0, pc->pic, set_irq);
+ 	pc->serial = u8250_init(4, pc->pic, set_irq);
+ 	pc->cmos = cmos_init(conf->mem_size, 8, pc->pic, set_irq);
++	if (conf->fpu)   /* the equipment byte's math coprocessor: the BIOS's equipment word (INT 11h) */
++		cmos_set(pc->cmos, 0x14, 0x02);
+ 	pc->ide = ide_allocate(14, pc->pic, set_irq);
+ 	pc->ide2 = ide_allocate(15, pc->pic, set_irq);
+ 	const char **disks = conf->disks;
+diff --git a/seabios/patch b/seabios/patch
+index b3c4253..7b77df5 100644
+--- a/seabios/patch
++++ b/seabios/patch
+@@ -214,12 +214,21 @@ diff --git a/src/misc.c b/src/misc.c
+ index b5117304..9cdc6d08 100644
+ --- a/src/misc.c
+ +++ b/src/misc.c
+-@@ -63,7 +63,7 @@ mathcp_setup(void)
++@@ -8,6 +8,7 @@
++ #include "biosvar.h" // GET_BDA
++ #include "bregs.h" // struct bregs
++ #include "hw/pic.h" // enable_hwirq
+++#include "hw/rtc.h" // rtc_read
++ #include "output.h" // debug_enter
++ #include "stacks.h" // call16_int
++ #include "string.h" // memset
++@@ -63,7 +64,8 @@ mathcp_setup(void)
+  {
+      dprintf(3, "math cp init\n");
+      // 80x87 coprocessor installed
+ -    set_equipment_flags(0x02, 0x02);
+-+//    set_equipment_flags(0x02, 0x02);
+++    if (rtc_read(CMOS_EQUIPMENT_INFO) & 0x02)   // (tiny386: CMOS 14h bit 1 when it has an FPU)
+++        set_equipment_flags(0x02, 0x02);
+      enable_hwirq(13, FUNC16(entry_75));
+  }
+  

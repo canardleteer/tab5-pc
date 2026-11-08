@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- The BIOS reports the math coprocessor when the PC has one (patch 0027): it never did, so DOS programs that ask the
+  BIOS before using the FPU did their floating point in software instead (a DOS benchmark's FPU test: 6.5 -> 205
+  "MHz"). Building the firmware now builds the BIOS from its pinned source (`tools/fetch_vendor.sh`; needs a gcc that
+  can build 32-bit x86 code), the VGA BIOS still from tiny386's release.
+- Writes that add to or change a value in memory (ADD, INC and the like) next to translated code, in the same 4 KB
+  page but not in its lines, no longer go through a slow check each time: a DOS benchmark that keeps its stack
+  beside its loop's code runs ~15% faster.
 - The last instructions that DOS programs commonly ran in the interpreter are translated: RCL and RCR by CL or by a
   count, the BCD instructions (DAA, DAS, AAA, AAS, AAM, AAD), and POP SS in real mode; and REP MOVS and REP STOS
   between memory and the VGA window (text and graphics video memory) no longer go through the interpreter. With
