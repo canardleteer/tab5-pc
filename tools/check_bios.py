@@ -8,7 +8,10 @@ so its images change in those bytes alone while the SeaBIOS source stays the sam
 
     tools/check_bios.py [--built NAME]... [DIR]      (default: vendor/)
 --built NAME: that image was built here (tools/build_seabios.sh): another compiler's bytes differ from the tested
-build's, so it passes if its SeaBIOS version is the pinned one.
+build's, so it passes if its SeaBIOS version is the pinned one and NAME.src, which the build writes, holds the
+fingerprint of the source it is built from now (the version alone doesn't tell: the images without and with
+vendor/patches/0027 have the same).
+--only NAME: check that image alone.   --fingerprint: print the fingerprint of the source now (for the build).
 """
 import hashlib
 import os
@@ -33,10 +36,35 @@ def unstamped(data):
     return bytes(d)
 
 
+def fingerprint():
+    """The source a build here takes: the SeaBIOS commit in bios.lock, and tiny386's seabios/patch and seabios/config
+    as vendor/patches leave them (vendor/tiny386)."""
+    h = hashlib.sha256()
+    for line in open(os.path.join(ROOT, "vendor", "bios.lock")):
+        if line.split()[:1] == ["seabios"]:
+            h.update(line.encode())
+    for f in ("patch", "config"):
+        h.update(open(os.path.join(ROOT, "vendor", "tiny386", "seabios", f), "rb").read())
+    return h.hexdigest()
+
+
+def built_from_now(folder, name):
+    try:
+        return open(os.path.join(folder, name + ".src")).read().strip() == fingerprint()
+    except OSError:
+        return False
+
+
 def main():
-    args, built = sys.argv[1:], set()
-    while len(args) >= 2 and args[0] == "--built":
-        built.add(args[1])
+    args, built, only = sys.argv[1:], set(), None
+    if args == ["--fingerprint"]:
+        print(fingerprint())
+        return
+    while len(args) >= 2 and args[0] in ("--built", "--only"):
+        if args[0] == "--built":
+            built.add(args[1])
+        else:
+            only = args[1]
         args = args[2:]
     folder = args[0] if args else os.path.join(ROOT, "vendor")
     pins, want_version = {}, None
@@ -50,13 +78,24 @@ def main():
             pins[f[0]] = (f[1], f[2])
     ok = True
     for name, (exact, blanked) in pins.items():
-        data = open(os.path.join(folder, name), "rb").read()
+        if only and name != only:
+            continue
+        try:
+            data = open(os.path.join(folder, name), "rb").read()
+        except OSError:
+            print(f"{name}: missing", file=sys.stderr)
+            ok = False
+            continue
         if hashlib.sha256(data).hexdigest() == exact:
             print(f"{name}: the pinned image ({version(data)})")
         elif hashlib.sha256(unstamped(data)).hexdigest() == blanked:
             print(f"{name}: the pinned build ({version(data)}), with another build stamp")
-        elif name in built and version(data) == want_version:
+        elif name in built and version(data) == want_version and built_from_now(folder, name):
             print(f"{name}: built here from the pinned source ({version(data)}; another compiler than the tested build's)")
+        elif name in built and version(data) == want_version:
+            print(f"{name}: built from other source than now (an older vendor/patches: no {name}.src, or another)",
+                  file=sys.stderr)
+            ok = False
         else:
             print(f"{name}: not the pinned image (SeaBIOS {version(data)}; pinned: {want_version})", file=sys.stderr)
             ok = False

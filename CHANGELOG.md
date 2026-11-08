@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Fixed: after the translator's code cache was emptied, newly translated read-modify-write instructions in pages
+  with translated code could call a helper at a place later overwritten (a crash or wrong results after long runs).
+- Fixed: a REP MOVS or STOS to or from video memory with an address near 4 GB could read outside the PC's memory.
+- Fixed: updating an existing checkout kept its old BIOS image, without the math coprocessor fix above;
+  `tools/fetch_vendor.sh` now rebuilds the BIOS when it was built from other source.
 - CPUID now names the CPU's maker as GenuineIntel, as QEMU's Intel CPU models do, instead of tiny386's own "TINY386
   CPU ": a DOS system information program took the 486 for another maker's.
 - Fixed: F2XM1 with an operand outside -1..+1 (where the result is undefined) now leaves it as it was, as Intel

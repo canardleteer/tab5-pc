@@ -27,7 +27,9 @@ else
     cp tiny386-release/tiny386/vgabios.bin .
   fi
   # (the release's bios.bin has tiny386's seabios/patch as it was: patch 0027 changes it, so it is built here)
-  [[ -f bios.bin ]] || BIOS_ONLY=1 ../tools/build_seabios.sh
+  # (built again when it is neither the pinned image nor built here from the source as it is now: a checkout from
+  # before patch 0027 kept the release's, of the same SeaBIOS version)
+  python3 ../tools/check_bios.py --built bios.bin --only bios.bin . >/dev/null 2>&1 || BIOS_ONLY=1 ../tools/build_seabios.sh
   python3 ../tools/check_bios.py --built bios.bin .
 fi
 echo "tiny386 $COMMIT ready"

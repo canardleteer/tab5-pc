@@ -3503,7 +3503,8 @@ static u32 *jit_x87_free, *jit_x87_end;   // its pool for the x87 routines (jit_
 static struct { u32 key; u32 *code; } jit_x87_memo[JIT_X87_MEMO];   // its routines (key 0: none)
 static u32 *jit_rt_copy[8], jit_rt_bytes;   // (t386_jit_block_at) the copies, the first first; a copy's size
 static int jit_rt_copies;
-#define JIT_RT(X) X(jit_fstore) X(jit_vga_wr) X(jit_r_ijc) X(jit_r_stop) X(jit_r_interp) X(jit_r_callc) X(jit_r_cf) X(jit_r_cond) X(jit_r_tlb) X(jit_r_tlbs) X(jit_t_prd) \
+static u32 *jit_rmw_chk[3];   // (jit_make_rmw_checks)
+#define JIT_RT(X) X(jit_fstore) X(jit_rmw_chk) X(jit_vga_wr) X(jit_r_ijc) X(jit_r_stop) X(jit_r_interp) X(jit_r_callc) X(jit_r_cf) X(jit_r_cond) X(jit_r_tlb) X(jit_r_tlbs) X(jit_t_prd) \
 		  X(jit_t_pwr) X(jit_t_prmw) X(jit_t_leave) X(jit_t_leave_f) X(jit_t_exit) X(jit_t_lexit) X(jit_t_bexit) X(jit_t_cprd) X(jit_t_cpwr) X(jit_r_push) X(jit_r_pop) X(jit_rt_at) X(jit_x87_free) X(jit_x87_end)
 #define JIT_RT_MEMBER(v) __typeof__(v) v;
 static struct { JIT_RT(JIT_RT_MEMBER) } jit_rt_first;
@@ -3523,7 +3524,6 @@ static void jit_rt_restore(void)
 // benchmark's stack in the buffer it copied its loop to) and not into the next page is plain RAM after all, t6 1;
 // anything else goes on to t386_jit_rmw1/2/4 (jumped to: they return to the stub). t0 the linear address; every
 // register but t6 kept.
-static u32 *jit_rmw_chk[3];
 static void jit_make_rmw_checks(void)
 {
 	static void (*const slows[3])(void) = { t386_jit_rmw1, t386_jit_rmw2, t386_jit_rmw4 };
@@ -4339,16 +4339,18 @@ static int jit_h_repio(CPUI386 *cpu, u32 kind, u32 v)
 	const uword d = cpu->seg[SEG_ES].base + di, sl = movs ? cpu->seg[(kind >> 12) & 7].base + si : 0;
 	const bool pm = cpu->cr0 & 1;
 	u8 *mem = (u8 *) cpu->phys_mem;
-#define REPIO_RAM(a, write) ((((a) + bytes <= 0xa0000) || (pm && (a) >= 0x100000 && (a) + bytes <= (uword) cpu->phys_mem_size)) && \
+	// [a, a + bytes) within [lo, hi), not wrapping past 4 GB (a + bytes would: a source at FFFFFFF0 passed as low RAM)
+#define REPIO_IN(a, lo, hi) ((a) >= (lo) && (a) < (hi) && bytes <= (hi) - (a))
+#define REPIO_RAM(a, write) ((REPIO_IN(a, 0, 0xa0000) || (pm && REPIO_IN(a, 0x100000, (uword) cpu->phys_mem_size))) && \
 	                     repio_pages(a, bytes, write))
-	if (d >= 0xa0000 && d + bytes <= 0xc0000 && (!movs || REPIO_RAM(sl, false))) {   // into the window
+	if (REPIO_IN(d, 0xa0000, 0xc0000) && (!movs || REPIO_RAM(sl, false))) {   // into the window
 		if (!movs || !t386_vga_text_write_string(d - 0xa0000, mem + sl, bytes))
 			for (u32 i = 0; i < bytes; i += n) {
 				u32 x = v;
 				if (movs) { x = 0; memcpy(&x, mem + sl + i, n); }
 				fast_io_write(cpu, d + i, n, x);
 			}
-	} else if (movs && sl >= 0xa0000 && sl + bytes <= 0xc0000 && REPIO_RAM(d, true)) {   // out of it, into RAM
+	} else if (movs && REPIO_IN(sl, 0xa0000, 0xc0000) && REPIO_RAM(d, true)) {   // out of it, into RAM
 		for (u32 i = 0; i < bytes; i += n) {
 			const u32 x = fast_io_read(cpu, sl + i, n);
 			memcpy(mem + d + i, &x, n);
@@ -4357,6 +4359,7 @@ static int jit_h_repio(CPUI386 *cpu, u32 kind, u32 v)
 		return 0;
 	}
 #undef REPIO_RAM
+#undef REPIO_IN
 	jit_repio_regs[0] &= ~m;
 	if (movs) jit_repio_regs[1] = (jit_repio_regs[1] & ~m) | ((si + bytes) & m);
 	jit_repio_regs[2] = (jit_repio_regs[2] & ~m) | ((di + bytes) & m);

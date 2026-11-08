@@ -22,10 +22,12 @@ PY
 chmod +x seabios/pyhost
 (cd seabios && patch -s -p1 < ../tiny386/seabios/patch && cp ../tiny386/seabios/config .config &&
  make -s oldconfig PYTHON=./pyhost >/dev/null && make -s -j"$(nproc 2>/dev/null || echo 4)" PYTHON=./pyhost)
+# each image with NAME.src: the fingerprint of the source it is built from (tools/check_bios.py --built checks it)
+FP=$(python3 ../tools/check_bios.py --fingerprint)
 if [[ "${BIOS_ONLY:-0}" == 1 ]]; then   # (tools/fetch_vendor.sh: the VGA BIOS from tiny386's release)
-  cp seabios/out/bios.bin .
+  cp seabios/out/bios.bin . && echo "$FP" > bios.bin.src
   echo "built bios.bin from SeaBIOS $SEABIOS"
 else
-  cp seabios/out/bios.bin seabios/out/vgabios.bin .
+  cp seabios/out/bios.bin seabios/out/vgabios.bin . && echo "$FP" > bios.bin.src && echo "$FP" > vgabios.bin.src
   echo "built bios.bin, vgabios.bin from SeaBIOS $SEABIOS"
 fi

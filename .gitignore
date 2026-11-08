@@ -8,4 +8,5 @@ __pycache__/
 /vendor/tiny386-release/
 /vendor/seabios/
 /vendor/*.bin
+/vendor/*.bin.src
 /firmware/tab5_386/src/bios_rom.c
