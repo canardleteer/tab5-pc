@@ -1,0 +1,22 @@
+CPUID's vendor string was tiny386's own, "TINY386 CPU ". Programs that tell CPUs apart by it took the CPU for
+another maker's: a DOS system information program named the 486 a Cyrix. Now it is GenuineIntel, as QEMU's Intel
+models (its 486 among them) report; the family and features stay as they were.
+
+diff --git a/i386.c b/i386.c
+--- a/i386.c
++++ b/i386.c
+@@ -3858,10 +3858,10 @@
+ #define CPUID() \
+ 	switch (REGi(0)) { \
+ 	case 0: \
+-		REGi(0) = 1; \
+-		REGi(3) = 0x594e4954; \
+-		REGi(2) = 0x20363833; \
+-		REGi(1) = 0x20555043; \
++		REGi(0) = 1; /* GenuineIntel, as QEMU's Intel models */ \
++		REGi(3) = 0x756e6547; \
++		REGi(2) = 0x49656e69; \
++		REGi(1) = 0x6c65746e; \
+ 		break; \
+ 	case 1: \
+ 		REGi(0) = 0 | (0 << 4) | (cpu->gen << 8); \

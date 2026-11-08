@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CPUID now names the CPU's maker as GenuineIntel, as QEMU's Intel CPU models do, instead of tiny386's own "TINY386
+  CPU ": a DOS system information program took the 486 for another maker's.
 - Fixed: F2XM1 with an operand outside -1..+1 (where the result is undefined) now leaves it as it was, as Intel
   FPUs can, instead of computing 2^x - 1: a DOS system information program reported a "Non-Intel" coprocessor.
 - WiFi now starts as you last left it, on or off, after a power-off or a crash too; before, it came back on only
