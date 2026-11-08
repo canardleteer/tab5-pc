@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- More instructions stay in translated code: REP string instructions with the direction flag set (backward
+  searches and copies, such as a C library's overlapping memmove), LAR and LSL in protected mode, and 16-bit SHLD
+  and SHRD. With paging on, a REP string instruction whose page isn't in the fast TLB yet now fills it and carries on
+  instead of running in the interpreter.
+- Fixed: a backward REP MOVS or REP STOS between memory and the VGA window (video memory) was done forwards by the
+  helper added for them; it now leaves those to the interpreter.
 - The BIOS reports the math coprocessor when the PC has one (patch 0027): it never did, so DOS programs that ask the
   BIOS before using the FPU did their floating point in software instead (a DOS benchmark's FPU test: 6.5 -> 205
   "MHz"). Building the firmware now builds the BIOS from its pinned source (`tools/fetch_vendor.sh`; needs a gcc that
